@@ -1,0 +1,145 @@
+{
+  "name": "modelpilot",
+  "displayName": "ModelPilot",
+  "publisher": "A-man-Sharma-04",
+  "author": "Aman Sharma Dev",
+  "icon": "images/icon.png",
+  "description": "Stop comparing AI models. ModelPilot recommends the most suitable available model for your task and routes your requests automatically.",
+  "version": "0.1.0",
+  "engines": {
+    "vscode": "^1.120.0"
+  },
+  "categories": [
+    "AI",
+    "Other"
+  ],
+  "keywords": [
+    "ai",
+    "routing",
+    "agent",
+    "groq",
+    "nvidia",
+    "openrouter"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/A-man-Sharma-04/modelpilot"
+  },
+  "homepage": "https://github.com/A-man-Sharma-04/modelpilot#readme",
+  "bugs": {
+    "url": "https://github.com/A-man-Sharma-04/modelpilot/issues"
+  },
+  "activationEvents": [],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "modelpilot.newChat",
+        "title": "ModelPilot: New Chat"
+      },
+      {
+        "command": "modelpilot.listModels",
+        "title": "ModelPilot: View Available Models"
+      },
+      {
+        "command": "modelpilot.refreshModels",
+        "title": "ModelPilot: Refresh Models"
+      },
+      {
+        "command": "modelpilot.selectExpert",
+        "title": "ModelPilot: Select Expert Profile"
+      },
+      {
+        "command": "modelpilot.addApiKey",
+        "title": "ModelPilot: Add API Key"
+      }
+    ],
+    "configuration": {
+      "title": "ModelPilot",
+      "properties": {
+        "modelpilot.defaultExpert": {
+          "type": "string",
+          "default": "coding",
+          "enum": [
+            "coding",
+            "reverse-engineering",
+            "binary-exploitation",
+            "web-security",
+            "malware-analysis",
+            "cryptography",
+            "linux",
+            "writing",
+            "documentation",
+            "learning"
+          ],
+          "enumDescriptions": [
+            "Coding Expert - software engineering, code generation and review",
+            "Reverse Engineering Expert - assembly, decompilers, ELF/PE analysis",
+            "Binary Exploitation Expert - buffer overflows, ROP chains, pwntools",
+            "Web Security Expert - XSS, SQLi, SSRF, web vulnerabilities",
+            "Malware Analysis Expert - triage, IOC extraction, behavioral analysis",
+            "Cryptography Expert - CTF crypto, cipher analysis, encoding",
+            "Linux Expert - system admin, shell scripting, internals",
+            "Writing Expert - reports, documentation, creative writing",
+            "Documentation Expert - READMEs, API docs, technical guides",
+            "Learning Expert - explanations, tutorials, concept breakdowns"
+          ],
+          "description": "Default expert profile when opening a new chat.",
+          "order": 4
+        },
+        "modelpilot.streamResponses": {
+          "type": "boolean",
+          "default": true,
+          "description": "Stream responses token by token as they arrive.",
+          "order": 5
+        }
+      }
+    },
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "modelpilot",
+          "title": "ModelPilot",
+          "icon": "$(rocket)"
+        }
+      ]
+    },
+    "views": {
+      "modelpilot": [
+        {
+          "type": "webview",
+          "id": "modelpilot.chatView",
+          "name": "Chat",
+          "icon": "$(comment-discussion)"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run package",
+    "compile": "npm run check-types && npm run lint && node esbuild.js",
+    "watch": "npm-run-all -p watch:*",
+    "watch:esbuild": "node esbuild.js --watch",
+    "watch:tsc": "tsc --noEmit --watch --project tsconfig.json",
+    "package": "npm run check-types && npm run lint && node esbuild.js --production",
+    "compile-tests": "tsc -p . --outDir out",
+    "watch-tests": "tsc -p . -w --outDir out",
+    "pretest": "npm run compile-tests && npm run compile && npm run lint",
+    "check-types": "tsc --noEmit",
+    "lint": "eslint src",
+    "test": "vscode-test"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.120.0",
+    "@types/mocha": "^10.0.10",
+    "@types/node": "22.x",
+    "typescript-eslint": "^8.56.1",
+    "eslint": "^9.39.3",
+    "esbuild": "^0.27.3",
+    "npm-run-all": "^4.1.5",
+    "typescript": "^5.9.3",
+    "@vscode/test-cli": "^0.0.12",
+    "@vscode/test-electron": "^2.5.2"
+  }
+}
