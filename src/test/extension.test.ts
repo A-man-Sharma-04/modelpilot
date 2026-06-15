@@ -12,4 +12,13 @@ suite('Extension Test Suite', () => {
 		assert.strictEqual(-1, [1, 2, 3].indexOf(5));
 		assert.strictEqual(-1, [1, 2, 3].indexOf(0));
 	});
+
+	test('ModelPilot: New Chat command should be registered', async () => {
+		const ext = vscode.extensions.getExtension('A-man-Sharma-04.modelpilot');
+		if (ext) {
+			await ext.activate();
+		}
+		const commands = await vscode.commands.getCommands(true);
+		assert.ok(commands.includes('modelpilot.newChat'), 'newChat command must be registered');
+	});
 });

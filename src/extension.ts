@@ -1,7 +1,6 @@
 import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
-import * as crypto from 'crypto';
 import * as os from 'os';
 import { NvidiaProvider } from './providers/NvidiaProvider';
 import { OpenRouterProvider } from './providers/OpenRouterProvider';
@@ -9,40 +8,80 @@ import { GroqProvider } from './providers/GroqProvider';
 import { ModelRegistry } from './registry/ModelRegistry';
 import { Recommender } from './engine/Recommender';
 import { Router } from './engine/Router';
-import { ChatSession } from './chat/ChatSession';
 import { SecretsManager, ProviderName } from './secrets';
 import { EXPERT_PROFILES, DEFAULT_EXPERT_ID, getExpertProfile } from './data/expertProfiles';
-import { AgentExecutor, AGENT_TOOLS_METADATA, getWorkspacePath, getWorkspaceRoot } from './engine/AgentExecutor';
+import { Message } from './providers/IProvider';
+import { AgentExecutor, AGENT_TOOLS_METADATA } from './engine/AgentExecutor';
+import {
+	TOOLS_INSTRUCTION,
+	MODEL_RELIABILITY_INSTRUCTIONS,
+	isGreetingOrChitchat,
+	checkIfCommandIsOutOfWorkspace,
+	cleanJsonString,
+	cleanToolCallTags,
+	parseTextToolCalls,
+	getSafeStreamLength
+} from './engine/chatHelpers';
+import { decompose, inferCategory, estimateTokens, estimateMessagesTokens } from './engine/TaskDecomposer';
+import { SYSTEM_PROMPT, MODE_PROMPTS, buildWorkspaceContext } from './participant/systemPrompt';
 
-interface SavedSession {
-	id: string;
-	title: string;
-	expertId: string;
-	createdAt: number;
-	messages: any[];
-}
-
-type WebviewMessage =
-	| { type: 'sendMessage'; text: string; expertId: string }
-	| { type: 'changeExpert'; expertId: string }
-	| { type: 'newChat' }
-	| { type: 'refreshModels' }
-	| { type: 'selectSession'; sessionId: string }
-	| { type: 'deleteSession'; sessionId: string }
-	| { type: 'approveTool'; id: string }
-	| { type: 'rejectTool'; id: string }
-	| { type: 'stopGeneration' }
-	| { type: 'openFile'; path: string }
-	| { type: 'insertCode'; text: string }
-	| { type: 'runCommand'; command: string }
-	| { type: 'approveAllReads' };
+let globalExpertProfile = DEFAULT_EXPERT_ID;
 
 function getConfig() {
 	const cfg = vscode.workspace.getConfiguration('modelpilot');
 	return {
 		stream: cfg.get<boolean>('streamResponses', true),
 		defaultExpert: cfg.get<string>('defaultExpert', DEFAULT_EXPERT_ID),
+		defaultMode: cfg.get<string>('defaultMode', 'default'),
 	};
+}
+
+function getDiagnosticsContextText(): string {
+	let contextStr = '';
+	try {
+		const diagnostics = vscode.languages.getDiagnostics();
+		let errorCount = 0;
+		let warningCount = 0;
+		let listStr = '';
+
+		for (const [uri, diagList] of diagnostics) {
+			const folders = vscode.workspace.workspaceFolders;
+			const root = folders && folders.length > 0 ? folders[0].uri.fsPath : undefined;
+			if (!root) {
+				continue;
+			}
+			const relPath = path.relative(root, uri.fsPath);
+
+			// Skip files outside workspace (e.g. node_modules, internal files)
+			if (relPath.startsWith('..') || path.isAbsolute(relPath)) {
+				continue;
+			}
+
+			const fileErrors = diagList.filter(d => d.severity === vscode.DiagnosticSeverity.Error);
+			const fileWarnings = diagList.filter(d => d.severity === vscode.DiagnosticSeverity.Warning);
+
+			if (fileErrors.length > 0 || fileWarnings.length > 0) {
+				listStr += `- File: ${relPath}\n`;
+				fileErrors.forEach(e => {
+					errorCount++;
+					listStr += `  - [Error] (Line ${e.range.start.line + 1}, Col ${e.range.start.character + 1}): ${e.message}\n`;
+				});
+				fileWarnings.forEach(w => {
+					warningCount++;
+					listStr += `  - [Warning] (Line ${w.range.start.line + 1}, Col ${w.range.start.character + 1}): ${w.message}\n`;
+				});
+			}
+		}
+
+		if (errorCount > 0 || warningCount > 0) {
+			contextStr += `[Workspace Diagnostics / Problems]\n`;
+			contextStr += `Total active errors: ${errorCount}, Warnings: ${warningCount}\n`;
+			contextStr += listStr + '\n';
+		}
+	} catch (e) {
+		// Ignore diagnostics gather errors
+	}
+	return contextStr;
 }
 
 function getWorkspaceContextText(): string {
@@ -73,6 +112,11 @@ function getWorkspaceContextText(): string {
 					contextStr += `Selected text in active file:\n\`\`\`\n${selection}\n\`\`\`\n`;
 				}
 			}
+
+			const diagnosticsContext = getDiagnosticsContextText();
+			if (diagnosticsContext) {
+				contextStr += `\n${diagnosticsContext}`;
+			}
 		} else {
 			contextStr += `No open workspace folder.\n`;
 		}
@@ -82,988 +126,990 @@ function getWorkspaceContextText(): string {
 	return contextStr;
 }
 
-import { ToolCall, Message } from './providers/IProvider';
 
-const TOOLS_INSTRUCTION = `
-[TOOL CALLING INSTRUCTION]
-You have access to a set of controlled tools to interact with the workspace and run terminal commands.
-You can request tool calls either using:
-1. Native function calling (if supported by your API).
-2. Or by outputting XML blocks in your text response. If you choose this, use the following exact XML structure:
 
-<use_tool>
-  <name>tool_name</name>
-  <arguments>
-    { "param": "value" }
-  </arguments>
-</use_tool>
-
-Available Tools:
-
-1. read_file
-   Description: Read the contents of a file in the workspace. Requires approval.
-   Arguments: { "path": "relative/path/to/file" }
-
-2. write_file
-   Description: Overwrite or update an existing file. Requires approval, shows diff.
-   Arguments: { "path": "relative/path/to/file", "content": "full new content" }
-
-3. create_file
-   Description: Create a new file with content. Requires approval.
-   Arguments: { "path": "relative/path/to/file", "content": "content" }
-
-4. delete_file
-   Description: Delete a file from the workspace. Requires approval.
-   Arguments: { "path": "relative/path/to/file" }
-
-5. search_workspace
-   Description: Search the workspace files for a specific query string (grep).
-   Arguments: { "query": "text to find" }
-
-6. list_directory
-   Description: List the contents of a directory in the workspace.
-   Arguments: { "path": "relative/path/to/directory" }
-
-7. get_open_files
-   Description: List currently open files in editor tabs.
-   Arguments: {}
-
-8. run_terminal_command
-   Description: Run a shell command in the workspace folder. Requires approval.
-   Arguments: { "command": "npm test" }
-
-Important:
-- Read-only file content inspection (read_file) and modifying operations (write_file, create_file, delete_file, run_terminal_command) strictly require explicit user approval. You CANNOT execute these operations autonomously without the user explicitly clicking the "Approve" button on their screen. Always expect that your file reads, deletions, or terminal runs will be reviewed and approved by the user first.
-- **Stricter Download/Installation Rules**: You are strictly prohibited from initiating package installations, compiling heavy binaries, or running shell commands that trigger network downloads (e.g. curl, wget, npm install, cargo build, pip install) without describing exactly what is being downloaded/installed in the chat and seeking user consent via chat *first*. This applies to all downloads, regardless of size (even light files).
-- Use tools whenever you need to inspect the workspace, read files, edit code, search, or run build/test commands.
-- **Automated Iterative Execution Loop**: Tool execution is fully automated and handled in a loop. When you request a tool call (either natively or via XML/JSON), the framework immediately intercepts it, prompts the user for approval (for modifying/destructive/read actions to ensure safety), executes it, and feeds the command output back to you in the next conversation turn automatically.
-- **Do Not Ask the User to Run Commands Manually**: Never output text telling the user "run this command" or "let me know when the command is done." Just output the tool call. The system will run it and present you the output.
-- **Reiterate on Tool Outputs**: Analyze the returned tool outputs, determine the next logical step, and call additional tools (e.g. read files, search, run sub-commands) in sequence to deep-dive. Continue iterating inside this loop until you have concrete, absolute findings.
-- **Deliver Direct, Non-Vague Results**: Provide final, direct, and actionable findings (e.g. specific security flags, errors, or file structures) rather than generalized or vague summaries. Your goal is to deliver the complete answer autonomously.
-- **Terminal Versatility**: The 'run_terminal_command' tool is your most general and powerful companion. Use it for complex system queries, running shell scripts, package managers, version control, running tests, or performing recursive system/workspace searches (like locating files by name or patterns) that are not covered by the simple read/write/list tools.
-- **Scope Restriction**: File operations ('read_file', 'write_file', 'create_file', 'delete_file', 'list_directory') are strictly locked to the workspace root directory. To access, read, write, create, or modify files/directories outside the workspace root (e.g., '~/Downloads', system folders), you **must** use 'run_terminal_command'.
-- **Operating System Casing & Path Rules**: Be mindful of path separators and case-sensitivity for the target OS (shown in [Environment Context]). For example, on Linux, paths are case-sensitive (e.g., '~/Downloads' is different from '~/downloads'), whereas Windows is typically case-insensitive. Always check for directory existence or use standard naming conventions to avoid creating redundant folders.
-- Respond with tool calls to perform operations, then analyze the results returned to you, and proceed step-by-step until the task is complete.
-`;
-
-function isGreetingOrChitchat(text: string): boolean {
-	const cleaned = text.trim().toLowerCase().replace(/[.,\/#!$%\^&\*;:{}=\-_`~()?]/g, "");
-
-	const exactGreetings = new Set([
-		'hi', 'hello', 'hey', 'hola', 'yo', 'sup', 'greetings', 'morning', 'afternoon', 'evening',
-		'good morning', 'good afternoon', 'good evening', 'howdy',
-		'how are you', 'how are you doing', 'hows it going', 'whats up', 'whats new',
-		'who are you', 'what is your name', 'what are you', 'test', 'ping',
-		'hi there', 'hello there', 'hey there', 'yo there'
-	]);
-
-	if (exactGreetings.has(cleaned)) {
-		return true;
-	}
-
-	const conversationalWords = new Set([
-		'hi', 'hello', 'hey', 'hola', 'yo', 'sup', 'greetings', 'morning', 'afternoon', 'evening',
-		'good', 'howdy', 'how', 'are', 'you', 'doing', 'is', 'it', 'going', 'whats', 'up', 'new',
-		'who', 'what', 'name', 'test', 'ping', 'there', 'this', 'a', 'the', 'to', 'your', 'today', 'buddy', 'friend'
-	]);
-
-	const words = cleaned.split(/\s+/).filter(w => w.length > 0);
-	if (words.length > 0 && words.every(w => conversationalWords.has(w))) {
-		return true;
-	}
-
-	// Smart chitchat heuristic: general informational queries that do not mention workspace files/code
-	const isGeneralQuestion = /^(what is|who is|explain|tell me about|how do i|how does|why is|why do|what does)\b/i.test(cleaned);
-	const mentionsWorkspace = /\b(file|folder|code|directory|project|workspace|repo|run|compile|test|build|error|debug|terminal|shell|command|function|class|method|variable|import|require)\b/i.test(cleaned);
-	if (isGeneralQuestion && !mentionsWorkspace) {
-		return true;
-	}
-
-	return false;
-}
-
-function checkIfCommandIsOutOfWorkspace(command: string): boolean {
-	try {
-		const root = getWorkspaceRoot();
-
-		// Look for absolute paths (starting with / or C:\ or [letter]:\)
-		const absPathRegex = /(?:\/|[A-Za-z]:\\)[\w_.\-\/\\*]+/g;
-		let match;
-		while ((match = absPathRegex.exec(command)) !== null) {
-			const matchedPath = match[0];
-			try {
-				const resolved = path.resolve(root, matchedPath);
-				if (!resolved.startsWith(root)) {
-					return true;
-				}
-			} catch {
-				// Path resolution failed (invalid characters, etc.) — continue checking
-			}
-		}
-
-		// Look for relative paths traversing upwards
-		if (command.includes('..')) {
-			return true;
-		}
-
-		// Look for home directory shortcuts or environment variables pointing outside workspace
-		if (command.includes('~/') || command.includes('$HOME') || command.includes('%USERPROFILE%')) {
-			return true;
-		}
-	} catch {
-		// If no workspace is open, then any command is technically out of workspace
-		return true;
-	}
-	return false;
-}
-
-function cleanJsonString(str: string): string {
-	let cleaned = str.trim();
-	if (cleaned.startsWith('```')) {
-		cleaned = cleaned.replace(/^```[a-zA-Z]*\n/, '').replace(/\n```$/, '');
-	}
-	return cleaned.trim();
-}
-
-function extractJsonObjects(text: string): any[] {
-	const objects: any[] = [];
-	let openBraces = 0;
-	let startIdx = -1;
-	let inString = false;
-	let escapeNext = false;
-
-	for (let i = 0; i < text.length; i++) {
-		const char = text[i];
-		if (escapeNext) {
-			escapeNext = false;
-			continue;
-		}
-		if (char === '\\') {
-			escapeNext = true;
-			continue;
-		}
-		if (char === '"') {
-			inString = !inString;
-			continue;
-		}
-		if (!inString) {
-			if (char === '{') {
-				if (openBraces === 0) {
-					startIdx = i;
-				}
-				openBraces++;
-			} else if (char === '}') {
-				if (openBraces > 0) {
-					openBraces--;
-					if (openBraces === 0 && startIdx !== -1) {
-						const candidate = text.slice(startIdx, i + 1);
-						try {
-							const cleaned = cleanJsonString(candidate);
-							const obj = JSON.parse(cleaned);
-							if (obj && typeof obj === 'object') {
-								objects.push(obj);
+function buildCopilotMessages(
+	request: vscode.ChatRequest,
+	chatContext: vscode.ChatContext
+): vscode.LanguageModelChatMessage[] {
+	const messages: vscode.LanguageModelChatMessage[] = [];
+	
+	for (const turn of chatContext.history) {
+		if (turn && typeof turn === 'object' && 'prompt' in turn) {
+			messages.push(vscode.LanguageModelChatMessage.User((turn as any).prompt));
+		} else if (turn && typeof turn === 'object' && 'response' in turn) {
+			let responseText = '';
+			const responseParts = (turn as any).response;
+			if (Array.isArray(responseParts)) {
+				for (const part of responseParts) {
+					if (part && typeof part === 'object') {
+						if ('value' in part) {
+							const val = (part as any).value;
+							if (typeof val === 'string') {
+								responseText += val;
+							} else if (val && typeof val === 'object' && 'value' in val) {
+								responseText += (val as any).value;
 							}
-						} catch {
-							// Ignore invalid JSON
 						}
-						startIdx = -1;
 					}
 				}
 			}
+			if (responseText) {
+				messages.push(vscode.LanguageModelChatMessage.Assistant(responseText));
+			}
 		}
 	}
-	return objects;
+	
+	messages.push(vscode.LanguageModelChatMessage.User(request.prompt));
+	return messages;
 }
 
-function parseTextToolCalls(text: string): ToolCall[] {
-	const toolCalls: ToolCall[] = [];
-	let index = 0;
+export function getApprovalMode(): 'default' | 'bypass' | 'autopilot' {
+	const userMode = vscode.workspace.getConfiguration('modelpilot').get<string>('approvalMode', 'default');
+	
+	// Fallback/respect VS Code global settings if user mode is set to 'default'
+	if (userMode === 'default') {
+		const vscodeDefault = vscode.workspace.getConfiguration('chat.permissions').get<string>('default');
+		const globalAutoApprove = vscode.workspace.getConfiguration('chat.tools.global').get<boolean>('autoApprove');
+		
+		if (globalAutoApprove === true || vscodeDefault === 'bypassApprovals' || vscodeDefault === 'autoApprove') {
+			return 'bypass';
+		}
+		if (vscodeDefault === 'autopilot') {
+			return 'autopilot';
+		}
+	}
+	
+	return userMode as 'default' | 'bypass' | 'autopilot';
+}
 
-	// 1. Scan for XML-based use_tool blocks
-	const blockRegex = /(?:<use_tool>|<_tool>|<tool>|use_tool>|_tool>|tool>|\buse_tool\b|\b_tool\b)\s*([\s\S]*?)\s*(?:<\/use_tool>|<\/_tool>|<\/tool>|\/use_tool>|\/_tool>|\/tool>|\/arguments|<\/arguments>|\buse_tool\b|\b_tool\b|$)/gi;
-	let match;
-	const xmlMatches: string[] = [];
+async function listDirFiles(dirPath: string, maxDepth: number, currentDepth = 0): Promise<string> {
+	if (currentDepth > maxDepth) {
+		return '';
+	}
+	let result = '';
+	try {
+		const entries = await fs.promises.readdir(dirPath, { withFileTypes: true });
+		for (const entry of entries) {
+			const entryPath = path.join(dirPath, entry.name);
+			if (entry.isDirectory()) {
+				if (entry.name === 'node_modules' || entry.name === '.git' || entry.name === 'dist' || entry.name === 'out') {
+					continue;
+				}
+				result += '  '.repeat(currentDepth) + `[Dir] ${entry.name}\n`;
+				result += await listDirFiles(entryPath, maxDepth, currentDepth + 1);
+			} else {
+				result += '  '.repeat(currentDepth) + `[File] ${entry.name}\n`;
+			}
+		}
+	} catch {
+		// Ignore errors
+	}
+	return result;
+}
 
-	while ((match = blockRegex.exec(text)) !== null) {
-		xmlMatches.push(match[0]);
-		const content = match[1];
-		if (!content.trim()) { continue; }
+export async function handleChatRequest(
+	request: vscode.ChatRequest,
+	chatContext: vscode.ChatContext,
+	response: vscode.ChatResponseStream,
+	token: vscode.CancellationToken,
+	sm: SecretsManager,
+	registry: ModelRegistry,
+	config: { stream: boolean; defaultExpert: string; defaultMode?: string },
+	refreshModels: () => Promise<number>,
+	globalState?: vscode.Memento
+) {
+	const isTestMode = typeof (global as any).it === 'function' || !!process.env.VSCODE_TEST_OPTIONS;
+	// Determine if the chat was started with modelpilot
+	let startedWithModelPilot = false;
+	const userTurns = chatContext.history.filter(turn => turn && typeof turn === 'object' && 'prompt' in turn);
+	if (userTurns.length > 0) {
+		const firstUserTurn = userTurns[0];
+		const lastTurn = chatContext.history[chatContext.history.length - 1];
 
-		const knownTools = [
-			'read_file', 'write_file', 'create_file', 'delete_file',
-			'search_workspace', 'list_directory', 'get_open_files', 'run_terminal_command'
-		];
-		let name = '';
-		for (const t of knownTools) {
-			if (content.includes(t)) {
-				name = t;
+		const firstPart = (firstUserTurn as any).participant || '';
+		const lastPart = (lastTurn as any).participant || '';
+
+		const isFirstModelPilot = firstPart === 'modelpilot.chatParticipant' || (typeof firstPart === 'string' && firstPart.endsWith('.modelpilot.chatParticipant'));
+		const isLastModelPilot = lastPart === 'modelpilot.chatParticipant' || (typeof lastPart === 'string' && lastPart.endsWith('.modelpilot.chatParticipant'));
+
+		if (!isTestMode || isFirstModelPilot || isLastModelPilot || request.command) {
+			startedWithModelPilot = true;
+		}
+	} else {
+		// If there are no user turns in the history (e.g. Copilot welcome greeting), we route natively
+		startedWithModelPilot = true;
+	}
+
+	if (!startedWithModelPilot) {
+		response.progress('Forwarding request to Copilot...');
+		try {
+			const copilotMessages = buildCopilotMessages(request, chatContext);
+			const copilotResponse = await request.model.sendRequest(copilotMessages, {}, token);
+			for await (const chunk of copilotResponse.stream) {
+				if (chunk instanceof vscode.LanguageModelTextPart) {
+					response.markdown(chunk.value);
+				}
+			}
+		} catch (err: any) {
+			response.markdown(`\n\n**Error forwarding request to Copilot:** ${err.message || String(err)}`);
+		}
+		return;
+	}
+
+	// Try decomposition first (only if no explicit slash command is entered, or if command is not a specific expert command)
+	const isSlashCommand = request.command && request.command !== 'general' && request.command !== 'ask' && request.command !== 'plan' && request.command !== 'agent';
+	const decomposed = isSlashCommand ? null : decompose(request.prompt);
+
+	if (decomposed && !token.isCancellationRequested) {
+		const outputs: Record<string, string> = {};
+		let currentCwd = '.';
+		for (let i = chatContext.history.length - 1; i >= 0; i--) {
+			const turn = chatContext.history[i];
+			const metadata = (turn as any).result?.metadata;
+			if (metadata && typeof metadata.agentCwd === 'string') {
+				currentCwd = metadata.agentCwd;
 				break;
 			}
 		}
 
-		if (!name) {
-			const nameMatch = content.match(/(?:name>|<name>|name\s*[:=]?\s*)([\w_-]+)/i);
-			if (nameMatch) {
-				name = nameMatch[1].trim();
-				if (name.endsWith('name') && name.length > 4) {
-					name = name.slice(0, -4);
-				}
-			}
-		}
-
-		let argsStr = '{}';
-		const argsTagMatch = content.match(/(?:arguments>|<arguments>|arguments\s*[:=]?\s*)([\s\S]*?)(?:<\/arguments>|\/arguments|$)/i);
-		if (argsTagMatch) {
-			const rawArgs = argsTagMatch[1].trim();
-			if (rawArgs.startsWith('{') && rawArgs.endsWith('}')) {
-				argsStr = cleanJsonString(rawArgs);
-			} else {
-				if (name === 'run_terminal_command') {
-					argsStr = JSON.stringify({ command: rawArgs });
-				} else if (name === 'read_file' || name === 'delete_file' || name === 'list_directory') {
-					argsStr = JSON.stringify({ path: rawArgs });
-				} else if (name === 'search_workspace') {
-					argsStr = JSON.stringify({ query: rawArgs });
-				} else {
-					const jsonMatch = rawArgs.match(/(\{[\s\S]*?\})/);
-					argsStr = jsonMatch ? cleanJsonString(jsonMatch[1]) : '{}';
-				}
-			}
-		} else {
-			const jsonMatch = content.match(/(\{[\s\S]*?\})/);
-			argsStr = jsonMatch ? cleanJsonString(jsonMatch[1]) : '{}';
-		}
-
-		if (name) {
-			toolCalls.push({
-				id: `call_${name}_${index++}_${crypto.randomBytes(4).toString('hex')}`,
-				type: 'function',
-				function: {
-					name,
-					arguments: argsStr
-				}
-			});
-		}
-	}
-
-	// 2. Strip XML matches from text to prevent duplicate parsing of JSON inside XML arguments
-	let remainingText = text;
-	for (const xmlMatch of xmlMatches) {
-		remainingText = remainingText.replace(xmlMatch, '');
-	}
-
-	// 3. Scan remaining text for raw JSON tool calls
-	const jsonObjects = extractJsonObjects(remainingText);
-	const knownTools = [
-		'read_file', 'write_file', 'create_file', 'delete_file',
-		'search_workspace', 'list_directory', 'get_open_files', 'run_terminal_command'
-	];
-
-	for (const obj of jsonObjects) {
-		let name = '';
-		let args: any = {};
-
-		if (obj.name && typeof obj.name === 'string' && knownTools.includes(obj.name)) {
-			name = obj.name;
-			args = obj.parameters || obj.arguments || obj.args || obj;
-		} else if (obj.tool && typeof obj.tool === 'string' && knownTools.includes(obj.tool)) {
-			name = obj.tool;
-			args = obj.arguments || obj.parameters || obj.args || obj;
-		} else if (obj.action && typeof obj.action === 'string' && knownTools.includes(obj.action)) {
-			name = obj.action;
-			args = obj.arguments || obj.parameters || obj.args || obj;
-		} else if (obj.function && typeof obj.function === 'object' && obj.function.name && typeof obj.function.name === 'string' && knownTools.includes(obj.function.name)) {
-			name = obj.function.name;
-			args = obj.function.arguments || obj.function.args || obj.arguments || obj.parameters || {};
-		}
-
-		// Ensure we don't self-reference name/tool/action inside arguments if args is the object itself
-		if (args === obj) {
-			const { name: _n, tool: _t, action: _a, function: _f, ...rest } = obj;
-			args = rest;
-		}
-
-		if (name) {
-			let argsStr = '{}';
-			if (typeof args === 'string') {
-				argsStr = args;
-			} else if (typeof args === 'object' && args !== null) {
-				argsStr = JSON.stringify(args);
+		let finalResult: any = undefined;
+		for (const subtask of decomposed.subtasks) {
+			if (token.isCancellationRequested) {
+				break;
 			}
 
-			toolCalls.push({
-				id: `call_${name}_${index++}_${crypto.randomBytes(4).toString('hex')}`,
-				type: 'function',
-				function: {
-					name,
-					arguments: argsStr
+			let instruction = subtask.instruction;
+			if (subtask.dependsOn) {
+				for (const depId of subtask.dependsOn) {
+					if (outputs[depId]) {
+						instruction += `\n\nContext from previous step:\n${outputs[depId]}`;
+					}
 				}
-			});
-		}
-	}
+			}
 
-	return toolCalls;
+			response.markdown(`\n\n**[${subtask.category.toUpperCase()}]** — *Running subtask: ${subtask.instruction}*\n\n`);
+
+			const subtaskRequest: vscode.ChatRequest = {
+				...request,
+				prompt: `${request.prompt}\n\nYour specific task: ${instruction}`,
+			};
+
+			finalResult = await executeSingleTask(
+				subtaskRequest,
+				chatContext,
+				response,
+				token,
+				sm,
+				registry,
+				config,
+				refreshModels,
+				globalState,
+				subtask.category,
+				currentCwd
+			);
+
+			if (finalResult && finalResult.metadata) {
+				if (finalResult.metadata.agentCwd) {
+					currentCwd = finalResult.metadata.agentCwd;
+				}
+				const assistantMsgs = finalResult.metadata.messages.filter((m: any) => m.role === 'assistant');
+				outputs[subtask.id] = assistantMsgs.map((m: any) => m.content).join('\n\n');
+			}
+
+			if (decomposed.subtasks.indexOf(subtask) < decomposed.subtasks.length - 1) {
+				response.markdown('\n\n---\n\n');
+			}
+		}
+		return finalResult;
+	} else {
+		return executeSingleTask(request, chatContext, response, token, sm, registry, config, refreshModels, globalState);
+	}
 }
 
-class ModelPilotViewProvider implements vscode.WebviewViewProvider {
-	private _view?: vscode.WebviewView;
-	private session: ChatSession;
-	private sessions: SavedSession[] = [];
-	private pendingApprovals = new Map<string, { resolve: (approved: boolean) => void; toolName: string }>();
-	private activeAbortControllers = new Map<string, AbortController>();
-	private commandQueue: { command: string; sId: string }[] = [];
-	private isProcessingQueue = false;
-	private autoApproveReads = false;
+export async function executeSingleTask(
+	request: vscode.ChatRequest,
+	chatContext: vscode.ChatContext,
+	response: vscode.ChatResponseStream,
+	token: vscode.CancellationToken,
+	sm: SecretsManager,
+	registry: ModelRegistry,
+	config: { stream: boolean; defaultExpert: string; defaultMode?: string },
+	refreshModels: () => Promise<number>,
+	globalState?: vscode.Memento,
+	forcedExpertId?: string,
+	forcedCwd?: string
+) {
+	const isTestMode = typeof (global as any).it === 'function' || !!process.env.VSCODE_TEST_OPTIONS;
+	// Determine if the chat was started with modelpilot
+	let startedWithModelPilot = false;
+	const userTurns = chatContext.history.filter(turn => turn && typeof turn === 'object' && 'prompt' in turn);
+	if (userTurns.length > 0) {
+		const firstUserTurn = userTurns[0];
+		const lastTurn = chatContext.history[chatContext.history.length - 1];
 
-	constructor(
-		private readonly extensionUri: vscode.Uri,
-		private readonly extensionPath: string,
-		private readonly registry: ModelRegistry,
-		private readonly sm: SecretsManager,
-		private readonly context: vscode.ExtensionContext,
-	) {
-		this.session = new ChatSession(getConfig().defaultExpert);
-		this.sessions = this.context.workspaceState.get<SavedSession[]>('modelpilot.sessions', []);
+		const firstPart = (firstUserTurn as any).participant || '';
+		const lastPart = (lastTurn as any).participant || '';
+
+		const isFirstModelPilot = firstPart === 'modelpilot.chatParticipant' || (typeof firstPart === 'string' && firstPart.endsWith('.modelpilot.chatParticipant'));
+		const isLastModelPilot = lastPart === 'modelpilot.chatParticipant' || (typeof lastPart === 'string' && lastPart.endsWith('.modelpilot.chatParticipant'));
+
+		if (!isTestMode || isFirstModelPilot || isLastModelPilot || request.command) {
+			startedWithModelPilot = true;
+		}
+	} else {
+		// If there are no user turns in the history (e.g. Copilot welcome greeting), we route natively
+		startedWithModelPilot = true;
 	}
 
-	resetSession() {
-		this.session = new ChatSession(getConfig().defaultExpert);
+	if (!startedWithModelPilot) {
+		response.progress('Forwarding request to Copilot...');
+		try {
+			const copilotMessages = buildCopilotMessages(request, chatContext);
+			const copilotResponse = await request.model.sendRequest(copilotMessages, {}, token);
+			for await (const chunk of copilotResponse.stream) {
+				if (chunk instanceof vscode.LanguageModelTextPart) {
+					response.markdown(chunk.value);
+				}
+			}
+		} catch (err: any) {
+			response.markdown(`\n\n**Error forwarding request to Copilot:** ${err.message || String(err)}`);
+		}
+		return;
 	}
 
-	syncSession(sessionToSync: ChatSession = this.session) {
-		const idx = this.sessions.findIndex(s => s.id === sessionToSync.id);
-		const currentMsgs = sessionToSync.getMessages().map(m => ({
-			id: m.id,
-			role: m.role,
-			content: m.content,
-			model: m.model,
-			provider: m.provider,
-			timestamp: m.timestamp,
-		}));
+	let agentCwd = forcedCwd !== undefined ? forcedCwd : '.';
+	if (forcedCwd === undefined) {
+		for (let i = chatContext.history.length - 1; i >= 0; i--) {
+			const turn = chatContext.history[i];
+			const metadata = (turn as any).result?.metadata;
+			if (metadata && typeof metadata.agentCwd === 'string') {
+				agentCwd = metadata.agentCwd;
+				break;
+			}
+		}
+	}
 
-		if (idx >= 0) {
-			this.sessions[idx].messages = currentMsgs;
-			this.sessions[idx].expertId = sessionToSync.expertId;
-			if (this.sessions[idx].title === 'New Chat') {
-				const firstUserMsg = sessionToSync.getMessages().find(m => m.role === 'user');
-				if (firstUserMsg && firstUserMsg.content) {
-					const cleanText = firstUserMsg.content.replace(/\s+/g, ' ').trim();
-					this.sessions[idx].title = cleanText.length > 30 ? cleanText.slice(0, 30) + '...' : cleanText;
+	// Resolve referenced files/folders in the user prompt early
+	let referencedFilesContext = '';
+	let classificationContext = '';
+	if (request.references && request.references.length > 0) {
+		classificationContext = `\nReferenced Context:\n`;
+		for (const ref of request.references) {
+			if (ref.value && typeof ref.value === 'object') {
+				let filePath: string | undefined;
+				if ('fsPath' in (ref.value as any)) {
+					filePath = (ref.value as any).fsPath;
+				} else if ('uri' in (ref.value as any) && (ref.value as any).uri && typeof (ref.value as any).uri === 'object' && 'fsPath' in (ref.value as any).uri) {
+					filePath = (ref.value as any).uri.fsPath;
+				}
+
+				if (filePath) {
+					try {
+						const relPath = vscode.workspace.workspaceFolders 
+							? path.relative(vscode.workspace.workspaceFolders[0].uri.fsPath, filePath) 
+							: path.basename(filePath);
+						
+						classificationContext += `- Path: ${relPath}\n`;
+
+						const stat = await fs.promises.stat(filePath);
+						if (stat.isDirectory()) {
+							const filesList = await listDirFiles(filePath, 3);
+							referencedFilesContext += `\n\n--- Folder: ${relPath} ---\nFolder structure:\n${filesList}\n`;
+						} else {
+							const fileContent = await fs.promises.readFile(filePath, 'utf8');
+							const truncated = fileContent.length > 5000 
+								? fileContent.slice(0, 2500) + '\n\n[Content truncated]\n\n' + fileContent.slice(-2500)
+								: fileContent;
+							referencedFilesContext += `\n\n--- File: ${relPath} ---\n${truncated}\n`;
+						}
+					} catch {
+						// Ignore unreadable files/folders
+					}
+				}
+			}
+		}
+	}
+
+	let finalPrompt = request.prompt;
+	if (referencedFilesContext) {
+		finalPrompt = `[Referenced Context]:\n${referencedFilesContext}\n\n[User Prompt]:\n${finalPrompt}`;
+	}
+
+	let expertId = forcedExpertId !== undefined ? forcedExpertId : globalExpertProfile;
+	let operationMode: 'default' | 'ask' | 'plan' | 'agent' = 'default';
+	
+	if (forcedExpertId === undefined) {
+		if (request.command) {
+			if (request.command === 'ask' || request.command === 'plan' || request.command === 'agent') {
+				operationMode = request.command;
+			} else {
+				const matched = EXPERT_PROFILES.find(e => e.id === request.command);
+				if (matched) {
+					expertId = matched.id;
 				}
 			}
 		} else {
-			const firstUserMsg = sessionToSync.getMessages().find(m => m.role === 'user');
-			let title = 'New Chat';
-			if (firstUserMsg && firstUserMsg.content) {
-				const cleanText = firstUserMsg.content.replace(/\s+/g, ' ').trim();
-				title = cleanText.length > 30 ? cleanText.slice(0, 30) + '...' : cleanText;
+			// Use modelpilot.defaultMode configuration setting if set
+			if (config.defaultMode && config.defaultMode !== 'default') {
+				operationMode = config.defaultMode as 'ask' | 'plan' | 'agent';
+			} else {
+				// Fallback: Check if vscode has any copilot mode setting
+				const copilotConfig = vscode.workspace.getConfiguration('github.copilot.chat');
+				const copilotModeSetting = copilotConfig.get<string>('defaultMode') || copilotConfig.get<string>('mode');
+				if (copilotModeSetting === 'ask' || copilotModeSetting === 'plan' || copilotModeSetting === 'agent') {
+					operationMode = copilotModeSetting;
+				}
 			}
-
-			this.sessions.push({
-				id: sessionToSync.id,
-				title,
-				expertId: sessionToSync.expertId,
-				createdAt: sessionToSync.createdAt,
-				messages: currentMsgs,
-			});
 		}
-
-		this.context.workspaceState.update('modelpilot.sessions', this.sessions);
-		this._view?.webview.postMessage({ type: 'sessionsUpdated', sessions: this.sessions });
+	} else {
+		// If forcedExpertId is provided, we can still inherit the mode if explicitly specified by command or defaults
+		if (request.command === 'ask' || request.command === 'plan' || request.command === 'agent') {
+			operationMode = request.command;
+		} else if (config.defaultMode && config.defaultMode !== 'default') {
+			operationMode = config.defaultMode as 'ask' | 'plan' | 'agent';
+		}
 	}
 
-	private async processCommandQueue(): Promise<void> {
-		if (this.isProcessingQueue || this.commandQueue.length === 0) {
-			return;
+	const initialTokensEstimate = estimateTokens(request.prompt) + chatContext.history.reduce((acc, h) => acc + (h && typeof h === 'object' && 'prompt' in h ? estimateTokens((h as any).prompt) : 0), 0);
+	const recommender = new Recommender(registry);
+	let recs = recommender.recommend(expertId, 10, initialTokensEstimate);
+
+	if (recs.length === 0) {
+		response.progress('No models loaded. Discovered keys, attempting to refresh models...');
+		await refreshModels();
+		recs = recommender.recommend(expertId, 10, initialTokensEstimate);
+	}
+
+	if (recs.length === 0) {
+		const keys = await sm.getAll();
+		const configured = Object.keys(keys).filter(k => (keys as any)[k].length > 0);
+		if (configured.length === 0) {
+			response.markdown('No models available. Run **ModelPilot: Add API Key** from the Command Palette to configure keys.');
+		} else {
+			const errors = registry.getLastErrors();
+			let msg = 'No models available. Even though keys are configured, model discovery failed:\n';
+			for (const pName of configured) {
+				const err = errors.get(pName) || 'Unknown error / connection failed';
+				msg += `- **${pName}**: ${err}\n`;
+			}
+			msg += '\nPlease verify your network connection, or run **ModelPilot: Add API Key** to clear and re-enter your keys.';
+			response.markdown(msg);
 		}
+		return;
+	}
 
-		this.isProcessingQueue = true;
+	let isChitchat = false;
+	if (operationMode === 'ask') {
+		isChitchat = true;
+	} else if (operationMode === 'plan') {
+		isChitchat = false;
+	} else if (operationMode === 'agent') {
+		isChitchat = false;
+	} else if (request.command && request.command !== 'general') {
+		isChitchat = false;
+	} else {
+		isChitchat = isGreetingOrChitchat(request.prompt);
+	}
 
+	// Smart intent classification using fast LLM if keys/models are available, no command was explicitly specified, not already classified as chitchat, and forcedExpertId is not provided
+	if (!isChitchat && !request.command && forcedExpertId === undefined && recs.length > 0) {
 		try {
-			while (this.commandQueue.length > 0) {
-				const item = this.commandQueue[0];
-				const toolCallId = `call_run_terminal_command_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
-				const isOutOfWorkspace = checkIfCommandIsOutOfWorkspace(item.command);
+			// Find the fastest model for classification to minimize latency
+			const speedRecs = recommender.recommendForSpeed();
+			if (speedRecs.length > 0) {
+				const classificationModel = speedRecs[0];
+				
+				const keys = await sm.getAll();
+				const providers = [
+					new NvidiaProvider(keys.nvidia),
+					new OpenRouterProvider(keys.openrouter),
+					new GroqProvider(keys.groq),
+				];
+				const router = new Router(providers);
 
-				const abortController = new AbortController();
-				this.activeAbortControllers.set(item.sId, abortController);
+				const classificationPrompt = `Analyze the user's prompt and the referenced context paths to categorize the request.
+Available expert profiles:
+- general: General conversation, greetings, simple chitchat, or generic questions.
+- coding: Coding tasks, software engineering, code generation, refactoring, debugging, code reviews.
+- reverse-engineering: Static/dynamic binary analysis, disassembly, decompilers (Ghidra, IDA), ELF/PE binaries.
+- binary-exploitation: Stack/heap exploits, ROP chains, format strings, buffer overflows.
+- web-security: Web vulnerabilities (XSS, SQLi, SSRF, CSRF, IDOR).
+- malware-analysis: Malware dynamic/static triage, YARA rules, threat intelligence.
+- cryptography: Cipher analysis, encoding, RSA/AES attacks, CTF crypto.
+- linux: Linux system administration, shell scripting, command line, internals.
+- writing: Document drafts, essays, emails, creative writing, reports.
+- documentation: API reference docs, README files, inline code comments.
+- learning: Explanations of complex topics, tutorials, concept breakdowns.
 
-				this._view?.webview.postMessage({
-					type: 'toolConfirm',
-					id: toolCallId,
-					name: 'run_terminal_command',
-					args: { command: item.command },
-					isOutOfWorkspace,
-					sessionId: item.sId,
-					standalone: true
-				});
+Available operation modes:
+- ask: Simple questions, explanations, asking how something works, or research.
+- plan: Requesting an architectural design, step-by-step implementation plan, or roadmap.
+- agent: Requesting file creation, modification, terminal commands execution, or performing a concrete task.
 
-				const approved = await new Promise<boolean>((resolve) => {
-					this.pendingApprovals.set(toolCallId, { resolve, toolName: 'run_terminal_command' });
-				});
+Respond ONLY with a JSON object in this format (no markdown blocks, no extra text):
+{
+  "isChitchat": true or false,
+  "expertId": "one of the profile IDs above",
+  "operationMode": "one of the operation modes above"
+}
 
-				if (approved && !abortController.signal.aborted) {
-					this._view?.webview.postMessage({
-						type: 'toolStart',
-						id: toolCallId,
-						name: 'run_terminal_command',
-						args: { command: item.command },
-						sessionId: item.sId,
-						standalone: true
-					});
-					try {
-						const result = await AgentExecutor.execute('run_terminal_command', { command: item.command }, abortController.signal);
-						this._view?.webview.postMessage({
-							type: 'toolEnd',
-							id: toolCallId,
-							name: 'run_terminal_command',
-							success: true,
-							result,
-							status: 'completed',
-							sessionId: item.sId,
-							standalone: true
-						});
-					} catch (err: any) {
-						this._view?.webview.postMessage({
-							type: 'toolEnd',
-							id: toolCallId,
-							name: 'run_terminal_command',
-							success: false,
-							result: err.message,
-							status: 'failed',
-							sessionId: item.sId,
-							standalone: true
-						});
+User Prompt: "${request.prompt.replace(/"/g, '\\"')}"
+${classificationContext}`;
+
+				const classificationResult = await router.route(
+					[classificationModel],
+					[
+						{ role: 'system', content: 'You are an intent classifier. Respond ONLY with the requested JSON.' },
+						{ role: 'user', content: classificationPrompt }
+					],
+					undefined,
+					{
+						stream: false,
+						maxTokens: 100,
+						timeout: 10000
+					}
+				);
+
+				const parsed = JSON.parse(classificationResult.content.trim());
+				if (parsed && typeof parsed === 'object') {
+					if (typeof parsed.isChitchat === 'boolean') {
+						isChitchat = parsed.isChitchat;
+					}
+					if (parsed.expertId && EXPERT_PROFILES.some(e => e.id === parsed.expertId)) {
+						expertId = parsed.expertId;
+					}
+					if (operationMode === 'default' && parsed.operationMode && ['ask', 'plan', 'agent'].includes(parsed.operationMode)) {
+						operationMode = parsed.operationMode;
+						if (operationMode === 'ask') {
+							isChitchat = true;
+						}
 					}
 				}
-
-				this.activeAbortControllers.delete(item.sId);
-				// Shift the queue after processing is finished
-				this.commandQueue.shift();
 			}
-		} finally {
-			this.isProcessingQueue = false;
+		} catch (err) {
+			// Fall back to local rules if classification fails
 		}
 	}
 
-	resolveWebviewView(webviewView: vscode.WebviewView) {
-		this._view = webviewView;
+	let useTools = !isChitchat;
+	if (operationMode === 'plan') {
+		useTools = false;
+	} else if (operationMode === 'agent') {
+		useTools = true;
+	} else if (operationMode === 'ask') {
+		useTools = false;
+	}
+	recs = isChitchat ? recommender.recommendForSpeed(10) : recommender.recommend(expertId, 10, initialTokensEstimate);
 
-		webviewView.webview.options = {
-			enableScripts: true,
-			localResourceRoots: [vscode.Uri.joinPath(this.extensionUri, 'dist')],
-		};
+	// Build workspace context
+	const projectStack: string[] = [];
+	const rootFolder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+	if (rootFolder) {
+		try {
+			if (fs.existsSync(path.join(rootFolder, 'package.json'))) { projectStack.push('Node.js / npm'); }
+			if (fs.existsSync(path.join(rootFolder, 'tsconfig.json'))) { projectStack.push('TypeScript'); }
+			if (fs.existsSync(path.join(rootFolder, 'requirements.txt')) || fs.existsSync(path.join(rootFolder, 'Pipfile')) || fs.existsSync(path.join(rootFolder, 'pyproject.toml'))) { projectStack.push('Python'); }
+			if (fs.existsSync(path.join(rootFolder, 'Cargo.toml'))) { projectStack.push('Rust'); }
+			if (fs.existsSync(path.join(rootFolder, 'go.mod'))) { projectStack.push('Go'); }
+			if (fs.existsSync(path.join(rootFolder, 'Gemfile'))) { projectStack.push('Ruby'); }
+			if (fs.existsSync(path.join(rootFolder, 'pom.xml')) || fs.existsSync(path.join(rootFolder, 'build.gradle'))) { projectStack.push('Java'); }
+			if (fs.existsSync(path.join(rootFolder, 'CMakeLists.txt'))) { projectStack.push('C/C++ (CMake)'); }
+		} catch {
+			// ignore filesystem errors
+		}
+	}
 
-		webviewView.webview.html = this.getHtml(webviewView.webview);
+	const activeEditor = vscode.window.activeTextEditor;
+	const activeFile = activeEditor ? vscode.workspace.asRelativePath(activeEditor.document.uri) : undefined;
+	const activeLanguage = activeEditor ? activeEditor.document.languageId : undefined;
+	const workspaceName = vscode.workspace.name;
 
-		setTimeout(() => {
-			const count = this.registry.getAvailable().length;
-			this._view?.webview.postMessage({ type: 'modelsRefreshed', count });
-			this._view?.webview.postMessage({ type: 'sessionsUpdated', sessions: this.sessions });
-			this._view?.webview.postMessage({
-				type: 'loadSession',
-				session: {
-					id: this.session.id,
-					title: this.sessions.find(s => s.id === this.session.id)?.title || 'New Chat',
-					expertId: this.session.expertId,
-					createdAt: this.session.createdAt,
-					messages: this.session.getMessages(),
-				},
-				isGenerating: this.activeAbortControllers.has(this.session.id)
-			});
-		}, 500);
+	const shellPath = vscode.env.shell;
+	const osPlatformForCtx = os.platform();
+	const osRelease = os.release();
+	const osType = os.type();
+	const osName = `${osType} (${osRelease})`;
 
-		webviewView.webview.onDidReceiveMessage(async (msg: WebviewMessage) => {
-			const keys = await this.sm.getAll();
-			const providers = [
-				new NvidiaProvider(keys.nvidia),
-				new OpenRouterProvider(keys.openrouter),
-				new GroqProvider(keys.groq),
-			];
-			const router = new Router(providers);
+	const workspaceCtxText = buildWorkspaceContext({
+		os: osName,
+		shell: shellPath,
+		platform: osPlatformForCtx,
+		projectStack,
+		activeFile,
+		activeLanguage,
+		workspaceName,
+	});
 
-			switch (msg.type) {
-				case 'newChat':
-					this.session = new ChatSession(getConfig().defaultExpert);
-					this._view?.webview.postMessage({
-						type: 'loadSession',
-						session: {
-							id: this.session.id,
-							title: 'New Chat',
-							expertId: this.session.expertId,
-							createdAt: this.session.createdAt,
-							messages: [],
-						},
-						isGenerating: false
-					});
-					break;
+	const apiMessages: Message[] = [];
+	const expert = getExpertProfile(expertId);
+	let baseSystemPrompt = `${workspaceCtxText}\n\n[MODEL RELIABILITY INSTRUCTIONS]\n${SYSTEM_PROMPT}`;
+	if (expert?.systemPrompt) {
+		baseSystemPrompt = `${baseSystemPrompt}\n\n${expert.systemPrompt}`;
+	}
+	const modePrompt = MODE_PROMPTS[expertId];
+	if (modePrompt) {
+		baseSystemPrompt = `${baseSystemPrompt}\n\n${modePrompt}`;
+	}
 
-				case 'changeExpert':
-					this.session.expertId = msg.expertId;
-					this.syncSession();
-					break;
+	// Build unified system prompt if tools are used
+	let finalSystemPrompt = baseSystemPrompt;
+	if (useTools) {
+		const systemPromptParts = [baseSystemPrompt];
 
-				case 'refreshModels': {
-					await this.registry.refresh(providers);
-					const count = this.registry.getAvailable().length;
-					this._view?.webview.postMessage({ type: 'modelsRefreshed', count });
-					vscode.window.showInformationMessage(`ModelPilot: ${count} models available.`);
-					break;
-				}
-
-				case 'selectSession': {
-					const saved = this.sessions.find(s => s.id === msg.sessionId);
-					if (saved) {
-						this.session.load(saved.id, saved.createdAt, saved.expertId, saved.messages as any);
-						this._view?.webview.postMessage({
-							type: 'loadSession',
-							session: saved,
-							isGenerating: this.activeAbortControllers.has(saved.id)
-						});
-					}
-					break;
-				}
-
-				case 'deleteSession': {
-					this.sessions = this.sessions.filter(s => s.id !== msg.sessionId);
-					this.context.workspaceState.update('modelpilot.sessions', this.sessions);
-					this._view?.webview.postMessage({ type: 'sessionsUpdated', sessions: this.sessions });
-
-					if (this.session.id === msg.sessionId) {
-						this.resetSession();
-						this._view?.webview.postMessage({
-							type: 'loadSession',
-							session: {
-								id: this.session.id,
-								title: 'New Chat',
-								expertId: this.session.expertId,
-								createdAt: this.session.createdAt,
-								messages: [],
-							},
-							isGenerating: false
-						});
-					}
-					break;
-				}
-
-				case 'approveTool': {
-					const pending = this.pendingApprovals.get(msg.id);
-					if (pending) {
-						pending.resolve(true);
-						this.pendingApprovals.delete(msg.id);
-					}
-					break;
-				}
-
-				case 'rejectTool': {
-					const pending = this.pendingApprovals.get(msg.id);
-					if (pending) {
-						pending.resolve(false);
-						this.pendingApprovals.delete(msg.id);
-					}
-					break;
-				}
-
-				case 'approveAllReads': {
-					this.autoApproveReads = true;
-					for (const [id, pending] of this.pendingApprovals.entries()) {
-						if (pending.toolName === 'read_file') {
-							pending.resolve(true);
-							this.pendingApprovals.delete(id);
-						}
-					}
-					break;
-				}
-
-				case 'stopGeneration': {
-					const sId = (msg as any).sessionId || this.session.id;
-					const controller = this.activeAbortControllers.get(sId);
-					if (controller) {
-						controller.abort();
-						this.activeAbortControllers.delete(sId);
-					}
-					for (const [id, pending] of this.pendingApprovals.entries()) {
-						pending.resolve(false);
-					}
-					this.pendingApprovals.clear();
-					break;
-				}
-
-				case 'openFile': {
-					try {
-						let filePath = msg.path;
-						if (filePath.startsWith('file://')) {
-							filePath = vscode.Uri.parse(filePath).fsPath;
-						}
-						if (!path.isAbsolute(filePath)) {
-							const root = getWorkspaceRoot();
-							filePath = path.join(root, filePath);
-						}
-						const doc = await vscode.workspace.openTextDocument(filePath);
-						await vscode.window.showTextDocument(doc);
-					} catch (e: any) {
-						vscode.window.showErrorMessage(`Failed to open file: ${e.message}`);
-					}
-					break;
-				}
-
-				case 'insertCode': {
-					const editor = vscode.window.activeTextEditor;
-					if (editor) {
-						editor.edit(editBuilder => {
-							editBuilder.insert(editor.selection.active, msg.text);
-						});
-					} else {
-						vscode.window.showErrorMessage('No active text editor to insert code.');
-					}
-					break;
-				}
-
-				case 'runCommand': {
-					const sId = this.session.id;
-					this.commandQueue.push({ command: msg.command, sId });
-					this.processCommandQueue();
-					break;
-				}
-
-				case 'sendMessage': {
-					const generatingSession = this.session;
-					const sessionId = generatingSession.id;
-
-					this.autoApproveReads = false;
-					generatingSession.addMessage('user', msg.text);
-					generatingSession.expertId = msg.expertId;
-					this.syncSession(generatingSession);
-
-
-
-					const toolEnabledExperts = new Set([
-						'general', 'coding', 'linux', 'reverse-engineering', 'binary-exploitation',
-						'web-security', 'malware-analysis', 'cryptography', 'documentation',
-						'writing', 'learning'
-					]);
-					const useTools = toolEnabledExperts.has(msg.expertId) && !isGreetingOrChitchat(msg.text);
-					const recs = useTools
-						? new Recommender(this.registry).recommend(msg.expertId)
-						: new Recommender(this.registry).recommendForSpeed();
-
-					if (recs.length === 0) {
-						this._view?.webview.postMessage({
-							type: 'messageError',
-							id: 'no-model',
-							error: 'No models available. Run "ModelPilot: Add API Key" from the Command Palette.',
-							sessionId
-						});
-						return;
-					}
-
-					const lastModel = recs[0].model;
-					let assistantMessage = generatingSession.addMessage(
-						'assistant',
-						'',
-						lastModel.id,
-						lastModel.provider
-					);
-					const assistantId = assistantMessage.id;
-
-					// Tell the webview which ID to stream into
-					this._view?.webview.postMessage({ type: 'thinking', id: assistantId, sessionId });
-
-					const abortController = new AbortController();
-					this.activeAbortControllers.set(sessionId, abortController);
-
-					(async () => {
-						let loopIteration = 0;
-						const maxIterations = 15;
-						let activeAssistantId = assistantId;
-
-						try {
-							while (loopIteration < maxIterations) {
-								if (abortController.signal.aborted) {
-									throw new Error('Agent execution interrupted by the user.');
-								}
-								loopIteration++;
-
-								const contextText = getWorkspaceContextText();
-								let apiMessages: Message[];
-
-								if (useTools) {
-									apiMessages = generatingSession.toApiMessages();
-									// Remove the generating assistant message if it's at the end
-									if (apiMessages[apiMessages.length - 1]?.role === 'assistant' && !apiMessages[apiMessages.length - 1].content && !apiMessages[apiMessages.length - 1].tool_calls) {
-										apiMessages.pop();
-									}
-
-									// Extract and remove the first system message if it exists to create a single unified system prompt
-									let expertSystemPrompt = '';
-									if (apiMessages[0]?.role === 'system') {
-										expertSystemPrompt = apiMessages[0].content;
-										apiMessages.shift();
-									}
-
-									const systemPromptParts = [];
-									if (expertSystemPrompt) {
-										systemPromptParts.push(expertSystemPrompt);
-									}
-
-									const osPlatform = os.platform();
-									const osHome = os.homedir();
-									const shellType = osPlatform === 'win32' ? 'Windows (CMD/PowerShell)' : 'Unix/Linux (bash/zsh)';
-									const pathSeparator = osPlatform === 'win32' ? '\\' : '/';
-									const envContext = `[Environment Context]
+		const osPlatform = os.platform();
+		const osHome = os.homedir();
+		const shellType = osPlatform === 'win32' ? 'Windows (CMD/PowerShell)' : 'Unix/Linux (bash/zsh)';
+		const pathSeparator = osPlatform === 'win32' ? '\\' : '/';
+		const envContext = `[Environment Context]
 - Operating System: ${osPlatform}
 - User Home Directory: ${osHome}
 - Path Separator: '${pathSeparator}'
-- Shell Syntax: Always use commands, tools, and path syntax compatible with ${shellType}.`;
+- Shell Syntax: Always use commands, tools, and path syntax compatible with ${shellType}.
+- Current Working Directory (Cwd): '${agentCwd}' (relative to workspace root)
+- File and Folder Context: Sincerely respect all attached file/folder references. Do not make mistakes with file names or paths. Perform only the exact tasks requested on those files.`;
 
-									systemPromptParts.push(envContext);
-									systemPromptParts.push(TOOLS_INSTRUCTION);
-									if (contextText) {
-										systemPromptParts.push(`[Current Workspace Context]\n${contextText}`);
-									}
+		systemPromptParts.push(envContext);
+		systemPromptParts.push(TOOLS_INSTRUCTION);
 
-									apiMessages.unshift({
-										role: 'system',
-										content: systemPromptParts.join('\n\n')
-									});
-								} else {
-									const expert = getExpertProfile(generatingSession.expertId);
-									const systemPrompt = expert?.systemPrompt || 'You are ModelPilot, a helpful AI assistant.';
-									apiMessages = [
-										{ role: 'system', content: systemPrompt },
-										...generatingSession.getMessages()
-											.filter(m => m.role !== 'tool')
-											.filter((m, idx, arr) => !(m.role === 'assistant' && !m.content && idx === arr.length - 1))
-											.map(m => {
-												const msg: Message = { role: m.role, content: m.content };
-												if (m.name !== undefined) { msg.name = m.name; }
-												return msg;
-											})
-									];
+		const workspaceContext = getWorkspaceContextText();
+		if (workspaceContext) {
+			systemPromptParts.push(`[Current Workspace Context]\n${workspaceContext}`);
+		}
+
+		if (operationMode === 'agent') {
+			systemPromptParts.push(`[Mode Context: Agent Mode]\nYou are operating in Agent Mode. You are an autonomous coding agent. Perform the task by using the provided tools to read, write, create, and delete files, or run terminal commands.`);
+		}
+
+		finalSystemPrompt = systemPromptParts.join('\n\n');
+	} else if (operationMode === 'plan') {
+		const systemPromptParts = [baseSystemPrompt];
+		systemPromptParts.push(`[Mode Context: Plan Mode]\nYou are operating in Plan Mode. Your goal is to analyze the user's request and provide a comprehensive, structured, step-by-step implementation plan for the query. Do NOT output any XML tool tags or write/modify files. Focus entirely on plan formulation, architectural design, and analysis.`);
+		
+		const workspaceContext = getWorkspaceContextText();
+		if (workspaceContext) {
+			systemPromptParts.push(`[Current Workspace Context]\n${workspaceContext}`);
+		}
+		
+		finalSystemPrompt = systemPromptParts.join('\n\n');
+	} else if (operationMode === 'ask') {
+		const systemPromptParts = [baseSystemPrompt];
+		systemPromptParts.push(`[Mode Context: Ask Mode]\nYou are operating in Ask Mode. Provide conversational support and answer the asked query. Do NOT attempt to run tools or propose code modifications via XML blocks.`);
+		
+		finalSystemPrompt = systemPromptParts.join('\n\n');
+	}
+
+	finalSystemPrompt = finalSystemPrompt + '\n\n' + MODEL_RELIABILITY_INSTRUCTIONS;
+	apiMessages.push({ role: 'system', content: finalSystemPrompt });
+
+	// Translate history turns
+	for (const turn of chatContext.history) {
+		if (turn && typeof turn === 'object' && 'prompt' in turn) {
+			apiMessages.push({ role: 'user', content: (turn as any).prompt });
+		} else if (turn && typeof turn === 'object' && 'response' in turn) {
+			const metadata = (turn as any).result?.metadata;
+			if (metadata && Array.isArray(metadata.messages)) {
+				if (apiMessages.length > 0) {
+					apiMessages.pop();
+				}
+				apiMessages.push(...metadata.messages);
+			} else {
+				let responseText = '';
+				const responseParts = (turn as any).response;
+				if (Array.isArray(responseParts)) {
+					for (const part of responseParts) {
+						if (part && typeof part === 'object') {
+							if ('value' in part) {
+								const val = (part as any).value;
+								if (typeof val === 'string') {
+									responseText += val;
+								} else if (val && typeof val === 'object' && 'value' in val) {
+									responseText += (val as any).value;
 								}
-
-								const chatResult = await router.route(
-									recs,
-									apiMessages,
-									useTools ? AGENT_TOOLS_METADATA : undefined,
-									{
-										stream: getConfig().stream,
-										onChunk: (text) => {
-											assistantMessage.content += text;
-											this.syncSession(generatingSession);
-											this._view?.webview.postMessage({ type: 'chunk', id: activeAssistantId, text, sessionId });
-										},
-										maxTokens: 2048,
-										abortSignal: abortController.signal,
-										timeout: useTools ? 30000 : 10000,
-									},
-									(from, to, reason) => {
-										this._view?.webview.postMessage({ type: 'fallback', from, to, reason, sessionId });
-									}
-								);
-
-								const assistantText = chatResult.content;
-								const parsedCalls = parseTextToolCalls(assistantText);
-								const toolCalls = [
-									...(chatResult.toolCalls || []),
-									...parsedCalls
-								];
-
-								// Update final content and tool calls if any
-								assistantMessage.content = assistantText;
-								if (toolCalls.length > 0) {
-									assistantMessage.tool_calls = toolCalls;
-								}
-								this.syncSession(generatingSession);
-
-								if (toolCalls.length === 0) {
-									this._view?.webview.postMessage({
-										type: 'messageComplete',
-										id: activeAssistantId,
-										model: lastModel.displayName,
-										provider: lastModel.provider,
-										sessionId
-									});
-									break;
-								}
-
-								for (const tc of toolCalls) {
-									const toolId = tc.id;
-									const toolName = tc.function.name;
-									let toolArgs: any = {};
-									try {
-										toolArgs = JSON.parse(cleanJsonString(tc.function.arguments));
-									} catch (err) {
-										const errMsg = `Error parsing tool arguments: ${err instanceof Error ? err.message : String(err)}`;
-										generatingSession.addMessage('tool', errMsg, undefined, undefined, toolName, toolId);
-										this.syncSession(generatingSession);
-										continue;
-									}
-
-									const needsApproval = AgentExecutor.requiresApproval(toolName);
-									let approved = true;
-
-									if (toolName === 'read_file' && this.autoApproveReads) {
-										approved = true;
-									} else if (needsApproval) {
-										let diff: { oldContent: string; newContent: string } | undefined;
-										if (toolName === 'write_file') {
-											try {
-												const filePath = getWorkspacePath(toolArgs.path);
-												const oldContent = await fs.promises.readFile(filePath, 'utf8');
-												diff = { oldContent, newContent: toolArgs.content };
-											} catch {
-												diff = { oldContent: '', newContent: toolArgs.content };
-											}
-										} else if (toolName === 'create_file') {
-											diff = { oldContent: '', newContent: toolArgs.content };
-										}
-
-										const isOutOfWorkspace = toolName === 'run_terminal_command' && checkIfCommandIsOutOfWorkspace(toolArgs.command);
-										this._view?.webview.postMessage({
-											type: 'toolConfirm',
-											id: toolId,
-											name: toolName,
-											args: toolArgs,
-											diff,
-											sessionId,
-											isOutOfWorkspace
-										});
-
-										approved = await new Promise<boolean>((resolve) => {
-											this.pendingApprovals.set(toolId, { resolve, toolName });
-										});
-									} else {
-										this._view?.webview.postMessage({
-											type: 'toolStart',
-											id: toolId,
-											name: toolName,
-											args: toolArgs,
-											sessionId
-										});
-									}
-
-									let result = '';
-									let success = false;
-									let status: 'completed' | 'failed' | 'rejected' = 'completed';
-
-									if (approved) {
-										try {
-											result = await AgentExecutor.execute(toolName, toolArgs, abortController.signal);
-											success = true;
-											status = 'completed';
-										} catch (err) {
-											result = err instanceof Error ? err.message : String(err);
-											success = false;
-											status = 'failed';
-										}
-									} else {
-										result = 'Tool execution rejected by user.';
-										success = false;
-										status = 'rejected';
-									}
-
-									this._view?.webview.postMessage({
-										type: 'toolEnd',
-										id: toolId,
-										name: toolName,
-										success,
-										result,
-										status,
-										sessionId
-									});
-
-									generatingSession.addMessage('tool', result, undefined, undefined, toolName, toolId);
-									this.syncSession(generatingSession);
-
-									if (abortController.signal.aborted) {
-										throw new Error('Agent execution interrupted by the user.');
-									}
-								}
-
-								// Prepare next iteration's assistant state
-								activeAssistantId = crypto.randomBytes(8).toString('hex');
-								assistantMessage = generatingSession.addMessage(
-									'assistant',
-									'',
-									lastModel.id,
-									lastModel.provider
-								);
-								this._view?.webview.postMessage({ type: 'thinking', id: activeAssistantId, sessionId });
 							}
-
-							if (loopIteration >= maxIterations) {
-								throw new Error('Maximum agent loop iterations reached.');
-							}
-
-						} catch (err) {
-							if (err instanceof Error && (err.name === 'AbortError' || err.message === 'Agent execution interrupted by the user.') || abortController.signal.aborted) {
-								this._view?.webview.postMessage({ type: 'messageError', id: activeAssistantId, error: 'Agent execution interrupted by the user.', sessionId });
-							} else {
-								const error = err instanceof Error ? err.message : String(err);
-								this._view?.webview.postMessage({ type: 'messageError', id: activeAssistantId, error, sessionId });
-							}
-						} finally {
-							this.activeAbortControllers.delete(sessionId);
 						}
-					})();
-
-					break;
+					}
+				}
+				if (responseText) {
+					apiMessages.push({ role: 'assistant', content: responseText });
 				}
 			}
-		});
+		}
 	}
 
-	postMessage(msg: object) {
-		this._view?.webview.postMessage(msg);
-	}
+	const currentTurnStartIndex = apiMessages.length;
+	apiMessages.push({ role: 'user', content: finalPrompt });
 
-	private getHtml(webview: vscode.Webview): string {
-		const nonce = crypto.randomBytes(16).toString('hex');
-		const htmlPath = path.join(this.extensionPath, 'src', 'webview', 'panel.html');
-		const jsUri = webview.asWebviewUri(
-			vscode.Uri.joinPath(this.extensionUri, 'dist', 'webview.js')
-		);
-		return fs.readFileSync(htmlPath, 'utf8')
-			.replaceAll('{{NONCE}}', nonce)
-			.replace('{{WEBVIEW_JS}}', jsUri.toString());
+	const keys = await sm.getAll();
+	const providers = [
+		new NvidiaProvider(keys.nvidia),
+		new OpenRouterProvider(keys.openrouter),
+		new GroqProvider(keys.groq),
+	];
+	const router = new Router(providers);
+
+	const abortController = new AbortController();
+	token.onCancellationRequested(() => {
+		abortController.abort();
+	});
+
+	let loopIteration = 0;
+	let maxIterations = 15;
+
+	try {
+		while (loopIteration < maxIterations) {
+			if (token.isCancellationRequested || abortController.signal.aborted) {
+				throw new Error('Agent execution interrupted by the user.');
+			}
+			loopIteration++;
+
+			// Rebuild and update the system prompt to reflect the latest agentCwd and workspace context
+			let currentSystemPrompt = baseSystemPrompt;
+			if (useTools) {
+				const systemPromptParts = [baseSystemPrompt];
+
+				const osPlatform = os.platform();
+				const osHome = os.homedir();
+				const shellType = osPlatform === 'win32' ? 'Windows (CMD/PowerShell)' : 'Unix/Linux (bash/zsh)';
+				const pathSeparator = osPlatform === 'win32' ? '\\' : '/';
+				const envContext = `[Environment Context]
+- Operating System: ${osPlatform}
+- User Home Directory: ${osHome}
+- Path Separator: '${pathSeparator}'
+- Shell Syntax: Always use commands, tools, and path syntax compatible with ${shellType}.
+- Current Working Directory (Cwd): '${agentCwd}' (relative to workspace root)
+- File and Folder Context: Sincerely respect all attached file/folder references. Do not make mistakes with file names or paths. Perform only the exact tasks requested on those files.`;
+
+				systemPromptParts.push(envContext);
+				systemPromptParts.push(TOOLS_INSTRUCTION);
+
+				const workspaceContext = getWorkspaceContextText();
+				if (workspaceContext) {
+					systemPromptParts.push(`[Current Workspace Context]\n${workspaceContext}`);
+				}
+
+				if (operationMode === 'agent') {
+					systemPromptParts.push(`[Mode Context: Agent Mode]\nYou are operating in Agent Mode. You are an autonomous coding agent. Perform the task by using the provided tools to read, write, create, and delete files, or run terminal commands.`);
+				}
+
+				currentSystemPrompt = systemPromptParts.join('\n\n');
+			} else if (operationMode === 'plan') {
+				const systemPromptParts = [baseSystemPrompt];
+				systemPromptParts.push(`[Mode Context: Plan Mode]\nYou are operating in Plan Mode. Your goal is to analyze the user's request and provide a comprehensive, structured, step-by-step implementation plan for the query. Do NOT output any XML tool tags or write/modify files. Focus entirely on plan formulation, architectural design, and analysis.`);
+				
+				const workspaceContext = getWorkspaceContextText();
+				if (workspaceContext) {
+					systemPromptParts.push(`[Current Workspace Context]\n${workspaceContext}`);
+				}
+				
+				currentSystemPrompt = systemPromptParts.join('\n\n');
+			} else if (operationMode === 'ask') {
+				const systemPromptParts = [baseSystemPrompt];
+				systemPromptParts.push(`[Mode Context: Ask Mode]\nYou are operating in Ask Mode. Provide conversational support and answer the asked query. Do NOT attempt to run tools or propose code modifications via XML blocks.`);
+				
+				currentSystemPrompt = systemPromptParts.join('\n\n');
+			}
+			
+			currentSystemPrompt = currentSystemPrompt + '\n\n' + MODEL_RELIABILITY_INSTRUCTIONS;
+			if (apiMessages.length > 0 && apiMessages[0].role === 'system') {
+				apiMessages[0].content = currentSystemPrompt;
+			}
+			if (loopIteration >= maxIterations) {
+				const appMode = getApprovalMode();
+				if (appMode === 'autopilot') {
+					maxIterations += 15;
+				} else {
+					const choice = await vscode.window.showWarningMessage(
+						`ModelPilot has reached the loop limit of ${maxIterations} turns. Do you want to allow it to continue running?`,
+						'Allow 15 More Turns',
+						'Stop Execution'
+					);
+					if (choice === 'Allow 15 More Turns') {
+						maxIterations += 15;
+					} else {
+						throw new Error('Agent execution stopped by the user.');
+					}
+				}
+			}
+
+			// Prune older tool outputs to avoid token overhead
+			let toolMessageCount = 0;
+			for (let i = apiMessages.length - 1; i >= 0; i--) {
+				if (apiMessages[i].role === 'tool') {
+					toolMessageCount++;
+					if (toolMessageCount > 4) {
+						const maxPruneChars = 500;
+						if (apiMessages[i].content && apiMessages[i].content.length > maxPruneChars) {
+							apiMessages[i].content = apiMessages[i].content.slice(0, maxPruneChars) + '\n\n[Older tool output truncated to save context tokens]';
+						}
+					}
+				}
+			}
+
+			const lastModel = recs[0].model;
+			response.progress(`Thinking using ${lastModel.displayName} (${lastModel.provider})...`);
+
+			let streamedTextLength = 0;
+			let accumulatedText = '';
+
+			const chatResult = await router.route(
+				recs,
+				apiMessages,
+				useTools ? AGENT_TOOLS_METADATA : undefined,
+				{
+					stream: config.stream,
+					onChunk: (text) => {
+						accumulatedText += text;
+						const safeLength = getSafeStreamLength(accumulatedText);
+						if (safeLength > streamedTextLength) {
+							const cleanTextToStream = accumulatedText.slice(streamedTextLength, safeLength);
+							response.markdown(cleanTextToStream);
+							streamedTextLength = safeLength;
+						}
+					},
+					maxTokens: 4096,
+					abortSignal: abortController.signal,
+					timeout: useTools ? 60000 : 10000,
+				},
+				(from, to, reason) => {
+					response.progress(`Switching: ${from} → ${to} (${reason})`);
+				}
+			);
+
+			const assistantText = chatResult.content;
+			const toolCalls = chatResult.toolCalls && chatResult.toolCalls.length > 0
+				? chatResult.toolCalls
+				: parseTextToolCalls(assistantText);
+
+			const cleanedContent = cleanToolCallTags(assistantText);
+
+			const assistantMessage: Message = {
+				role: 'assistant',
+				content: cleanedContent
+			};
+			if (toolCalls.length > 0) {
+				assistantMessage.tool_calls = toolCalls;
+			}
+			apiMessages.push(assistantMessage);
+
+			if (toolCalls.length === 0) {
+				break;
+			}
+
+			// Execute the tool calls sequentially
+			for (const tc of toolCalls) {
+				if (token.isCancellationRequested || abortController.signal.aborted) {
+					throw new Error('Agent execution interrupted by the user.');
+				}
+
+				const toolId = tc.id;
+				const toolName = tc.function.name;
+				let toolArgs: any = {};
+				try {
+					toolArgs = JSON.parse(cleanJsonString(tc.function.arguments));
+				} catch (err) {
+					const errMsg = `Error parsing tool arguments: ${err instanceof Error ? err.message : String(err)}`;
+					apiMessages.push({
+						role: 'tool',
+						name: toolName,
+						tool_call_id: toolId,
+						content: errMsg
+					});
+					continue;
+				}
+
+				// Validate required arguments before prompting the user
+				if (toolName === 'run_terminal_command' && (typeof toolArgs.command !== 'string' || !toolArgs.command)) {
+					apiMessages.push({
+						role: 'tool',
+						name: toolName,
+						tool_call_id: toolId,
+						content: "Error: Missing required argument 'command' of type string."
+					});
+					continue;
+				}
+				if (['read_file', 'write_file', 'create_file', 'delete_file', 'list_directory'].includes(toolName) && (typeof toolArgs.path !== 'string' || !toolArgs.path)) {
+					apiMessages.push({
+						role: 'tool',
+						name: toolName,
+						tool_call_id: toolId,
+						content: "Error: Missing required argument 'path' of type string."
+					});
+					continue;
+				}
+				if (toolName === 'search_workspace' && (typeof toolArgs.query !== 'string' || !toolArgs.query)) {
+					apiMessages.push({
+						role: 'tool',
+						name: toolName,
+						tool_call_id: toolId,
+						content: "Error: Missing required argument 'query' of type string."
+					});
+					continue;
+				}
+
+				const needsApproval = AgentExecutor.requiresApproval(toolName);
+				let approved = true;
+
+				if (needsApproval) {
+					const appMode = getApprovalMode();
+					if (appMode === 'bypass') {
+						approved = true;
+					} else if (appMode === 'autopilot') {
+						let consented = false;
+						if (globalState) {
+							consented = globalState.get<boolean>('autopilotConsent', false);
+						}
+						if (consented) {
+							approved = true;
+						} else {
+							response.markdown('⚠️ **ModelPilot Autopilot Warning**: You are using a free agent which may make mistakes. In Autopilot mode, the agent operates without human-in-the-loop approvals. Please confirm consent in the warning dialog to proceed.');
+							const choice = await vscode.window.showWarningMessage(
+								'Autopilot Consent: You are enabling Autopilot mode using a free agent which may make mistakes. The agent will execute commands and modify files autonomously. Do you consent?',
+								{ modal: true },
+								'I Consent',
+								'Cancel'
+							);
+							if (choice === 'I Consent') {
+								if (globalState) {
+									await globalState.update('autopilotConsent', true);
+								}
+								approved = true;
+							} else {
+								approved = false;
+							}
+						}
+					} else {
+						const isOutOfWorkspace = toolName === 'run_terminal_command' && checkIfCommandIsOutOfWorkspace(toolArgs.command, agentCwd);
+						let message = '';
+						if (toolName === 'run_terminal_command') {
+							let cmdPreview = toolArgs.command;
+							if (cmdPreview.length > 150 || cmdPreview.includes('\n')) {
+								const lines = cmdPreview.split('\n');
+								const firstLine = lines[0];
+								cmdPreview = (firstLine.length > 120 ? firstLine.substring(0, 120) + '...' : firstLine) + '\n... [command truncated for length]';
+							}
+							if (isOutOfWorkspace) {
+								message = `[WARNING: Out of Workspace Boundary]\nModelPilot wants to run a terminal command:\n\n$ ${cmdPreview}\n\n(Total length: ${toolArgs.command.length} chars)\n\nDo you approve?`;
+							} else {
+								message = `ModelPilot wants to run a terminal command:\n\n$ ${cmdPreview}\n\n(Total length: ${toolArgs.command.length} chars)\n\nDo you approve?`;
+							}
+						} else if (toolName === 'write_file') {
+							message = `ModelPilot wants to modify file '${toolArgs.path}'. Do you approve?`;
+						} else if (toolName === 'create_file') {
+							message = `ModelPilot wants to create file '${toolArgs.path}'. Do you approve?`;
+						} else if (toolName === 'delete_file') {
+							message = `ModelPilot wants to delete file '${toolArgs.path}'. Do you approve?`;
+						} else if (toolName === 'read_file') {
+							message = `ModelPilot wants to read file '${toolArgs.path}'. Do you approve?`;
+						} else {
+							let argsStr = JSON.stringify(toolArgs);
+							if (argsStr.length > 150) {
+								argsStr = argsStr.substring(0, 150) + '... [arguments truncated]';
+							}
+							message = `ModelPilot wants to run tool '${toolName}' with arguments: ${argsStr}. Do you approve?`;
+						}
+
+						response.progress(`Awaiting approval for executing tool: ${toolName}...`);
+						const choice = await vscode.window.showWarningMessage(message, { modal: true }, 'Approve', 'Reject');
+						approved = (choice === 'Approve');
+					}
+				}
+
+				let result = '';
+				if (approved) {
+					response.progress(`Running tool: ${toolName}...`);
+					try {
+						const execResult = await AgentExecutor.execute(toolName, toolArgs, agentCwd, abortController.signal);
+						result = execResult.result;
+						if (execResult.newCwd !== undefined) {
+							agentCwd = execResult.newCwd;
+						}
+					} catch (err) {
+						result = err instanceof Error ? err.message : String(err);
+					}
+				} else {
+					result = 'Tool execution rejected by user.';
+				}
+
+				apiMessages.push({
+					role: 'tool',
+					name: toolName,
+					tool_call_id: toolId,
+					content: result
+				});
+			}
+		}
+
+		if (loopIteration >= maxIterations) {
+			throw new Error('Maximum agent loop iterations reached.');
+		}
+
+		return {
+			metadata: {
+				messages: apiMessages.slice(currentTurnStartIndex),
+				agentCwd
+			}
+		};
+	} catch (err: any) {
+		console.error('executeSingleTask caught error:', err);
+		if (abortController.signal.aborted || token.isCancellationRequested) {
+			response.markdown('\n\n*Generation cancelled by user.*');
+		} else {
+			response.markdown(`\n\n**Error:** ${err.message || String(err)}`);
+		}
 	}
 }
 
 export function activate(context: vscode.ExtensionContext) {
 	const sm = new SecretsManager(context.secrets);
+
 	const registry = new ModelRegistry();
 
-	const provider = new ModelPilotViewProvider(
-		context.extensionUri,
-		context.extensionPath,
-		registry,
-		sm,
-		context,
-	);
+	globalExpertProfile = getConfig().defaultExpert;
 
-	context.subscriptions.push(
-		vscode.window.registerWebviewViewProvider('modelpilot.chatView', provider, {
-			webviewOptions: { retainContextWhenHidden: true },
-		})
-	);
+	let activeRefreshPromise: Promise<number> | undefined;
 
-	async function refreshModels() {
-		const keys = await sm.getAll();
-		const providers = [
-			new NvidiaProvider(keys.nvidia),
-			new OpenRouterProvider(keys.openrouter),
-			new GroqProvider(keys.groq),
-		];
-		await registry.refresh(providers);
-		const count = registry.getAvailable().length;
-		provider.postMessage({ type: 'modelsRefreshed', count });
-		return count;
+	function refreshModels(): Promise<number> {
+		if (activeRefreshPromise) {
+			return activeRefreshPromise;
+		}
+		activeRefreshPromise = (async () => {
+			try {
+				const keys = await sm.getAll();
+				const providers = [
+					new NvidiaProvider(keys.nvidia),
+					new OpenRouterProvider(keys.openrouter),
+					new GroqProvider(keys.groq),
+				];
+				await registry.refresh(providers);
+				return registry.getAvailable().length;
+			} finally {
+				activeRefreshPromise = undefined;
+			}
+		})();
+		return activeRefreshPromise;
 	}
 
 	refreshModels();
 
+	// Register Chat Participant
+	const handler: vscode.ChatRequestHandler = async (request, chatContext, response, token) => {
+		const config = getConfig();
+		return handleChatRequest(request, chatContext, response, token, sm, registry, config, refreshModels, context.globalState);
+	};
+
+	const participant = vscode.chat.createChatParticipant('modelpilot.chatParticipant', handler);
+	participant.iconPath = vscode.Uri.joinPath(context.extensionUri, 'images', 'icon.png');
+
 	context.subscriptions.push(
+		participant,
+
+		vscode.commands.registerCommand('modelpilot.newChat', async () => {
+			await vscode.commands.executeCommand('workbench.action.chat.open', {
+				query: '@modelpilot ',
+				isPartialQuery: true
+			});
+		}),
 
 		vscode.commands.registerCommand('modelpilot.addApiKey', async () => {
 			const providers: { label: string; detail: string; id: ProviderName }[] = [
@@ -1169,11 +1215,6 @@ export function activate(context: vscode.ExtensionContext) {
 			await refreshModels();
 		}),
 
-		vscode.commands.registerCommand('modelpilot.newChat', () => {
-			provider.resetSession();
-			vscode.commands.executeCommand('modelpilot.chatView.focus');
-		}),
-
 		vscode.commands.registerCommand('modelpilot.refreshModels', async () => {
 			const count = await refreshModels();
 			vscode.window.showInformationMessage(`ModelPilot: Found ${count} available models.`);
@@ -1198,7 +1239,6 @@ export function activate(context: vscode.ExtensionContext) {
 		}),
 
 		vscode.commands.registerCommand('modelpilot.selectExpert', async () => {
-			// Select expert from command palette will be bridged to the UI
 			const items = EXPERT_PROFILES.map(e => ({
 				label: e.label,
 				description: e.description,
@@ -1211,8 +1251,8 @@ export function activate(context: vscode.ExtensionContext) {
 			});
 			if (!picked) { return; }
 
-			provider.postMessage({ type: 'setExpert', expertId: picked.id });
-			vscode.commands.executeCommand('modelpilot.chatView.focus');
+			globalExpertProfile = picked.id;
+			vscode.window.showInformationMessage(`ModelPilot: Selected expert profile ${picked.label}.`);
 		}),
 	);
 }

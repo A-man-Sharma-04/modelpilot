@@ -12,16 +12,25 @@ export interface Recommendation {
 export class Recommender {
 	constructor(private readonly registry: ModelRegistry) { }
 
-	recommend(expertId: string, limit = 5): Recommendation[] {
+	recommend(expertId: string, limit = 5, inputTokens = 0): Recommendation[] {
 		const expert = getExpertProfile(expertId);
 		if (!expert) {
 			return [];
 		}
 
 		const available = this.registry.getAvailable();
+
+		const eligible = inputTokens > 0
+			? available.filter(m => {
+				const safe = (m as any).safeInputTokens
+					?? Math.floor((m.contextLength / 4) * 0.75);
+				return safe >= inputTokens;
+			})
+			: available;
+
 		const scored: { model: Model; score: number }[] = [];
 
-		for (const model of available) {
+		for (const model of eligible) {
 			let score = 0;
 			// Compute weighted score based on expert's weights
 			for (const [dim, weight] of Object.entries(expert.scoringWeights)) {
@@ -29,7 +38,10 @@ export class Recommender {
 				score += capValue * (weight ?? 0);
 			}
 			// Add provider tie-breaker: groq > openrouter > nvidia
-			const providerBonus = model.provider === 'groq' ? 4.0 : (model.provider === 'openrouter' ? 1.5 : 0);
+			let providerBonus = model.provider === 'groq' ? 4.0 : (model.provider === 'openrouter' ? 1.5 : 0);
+			if (expertId === 'learning' && model.provider === 'groq') {
+				providerBonus += 20.0;
+			}
 			score += providerBonus;
 			scored.push({ model, score });
 		}

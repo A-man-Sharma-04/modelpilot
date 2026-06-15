@@ -32,32 +32,14 @@ const extensionConfig = {
 	plugins: [esbuildProblemMatcherPlugin],
 };
 
-const webviewConfig = {
-	entryPoints: ['src/webview/index.ts'],
-	bundle: true,
-	format: 'iife',
-	minify: production,
-	sourcemap: !production,
-	sourcesContent: false,
-	platform: 'browser',
-	outfile: 'dist/webview.js',
-	logLevel: 'silent',
-	plugins: [esbuildProblemMatcherPlugin],
-};
-
 async function main() {
 	if (watch) {
 		const extCtx = await esbuild.context(extensionConfig);
-		const webCtx = await esbuild.context(webviewConfig);
-		await Promise.all([extCtx.watch(), webCtx.watch()]);
+		await extCtx.watch();
 	} else {
 		const extCtx = await esbuild.context(extensionConfig);
 		await extCtx.rebuild();
 		await extCtx.dispose();
-
-		const webCtx = await esbuild.context(webviewConfig);
-		await webCtx.rebuild();
-		await webCtx.dispose();
 	}
 }
 

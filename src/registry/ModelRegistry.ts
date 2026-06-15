@@ -4,20 +4,31 @@ import { getModelProfile } from '../data/modelProfiles';
 
 export class ModelRegistry {
 	private models = new Map<string, Model>();
+	private lastErrors = new Map<string, string>();
 
 	async refresh(providers: IProvider[]): Promise<void> {
 		this.models.clear();
+		this.lastErrors.clear();
 
 		const results = await Promise.allSettled(
 			providers.filter(p => p.isConfigured()).map(async (p) => {
-				const liveModels = await p.listModels();
-				return { providerName: p.name, liveModels };
+				try {
+					const liveModels = await p.listModels();
+					return { providerName: p.name, liveModels };
+				} catch (err: any) {
+					const msg = err instanceof Error ? err.message : String(err);
+					this.lastErrors.set(p.name, msg);
+					throw err;
+				}
 			})
 		);
 
 		for (const result of results) {
 			if (result.status === 'fulfilled') {
 				const { providerName, liveModels } = result.value;
+				if (liveModels.length === 0) {
+					this.lastErrors.set(providerName, 'No models returned by provider (check auth/key validity).');
+				}
 				for (const live of liveModels) {
 					const profile = getModelProfile(providerName, live.id);
 					if (profile) {
@@ -25,22 +36,14 @@ export class ModelRegistry {
 							...profile,
 							available: live.available,
 						});
-					} else {
-						// Dynamically create a profile for unexpected live models
-						this.models.set(`${providerName}::${live.id}`, {
-							id: live.id,
-							provider: providerName as any,
-							displayName: live.id.split('/').pop()?.replace(/-/g, ' ') ?? live.id,
-							contextLength: 32000,
-							capabilities: { coding: 5, reasoning: 5, writing: 5, learning: 5, security: 5, speed: 5 },
-							description: `Dynamically discovered model from ${providerName}.`,
-							lastVerified: new Date().toISOString().split('T')[0],
-							available: live.available,
-						});
 					}
 				}
 			}
 		}
+	}
+
+	getLastErrors(): Map<string, string> {
+		return this.lastErrors;
 	}
 
 	getAll(): Model[] {

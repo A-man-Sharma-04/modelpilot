@@ -3,6 +3,8 @@
 out/**
 node_modules/**
 src/**
+scratch/**
+dumped_keys.json
 .gitignore
 .yarnrc
 esbuild.js
@@ -13,3 +15,4 @@ vsc-extension-quickstart.md
 **/*.ts
 **/.vscode-test.*
 *.vsix
+

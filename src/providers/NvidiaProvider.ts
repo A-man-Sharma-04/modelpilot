@@ -39,7 +39,7 @@ export class NvidiaProvider extends OpenAICompatibleProvider {
 
 		if (!response || !response.ok) {
 			if (authFailed) {
-				return [];
+				throw new Error('Authentication failed (401/403). Please verify your API key.');
 			}
 			return MODEL_PROFILES
 				.filter(m => m.provider === 'nvidia' && !m.id.toLowerCase().includes('gemma'))
@@ -56,15 +56,6 @@ export class NvidiaProvider extends OpenAICompatibleProvider {
 					id: m.id,
 					available: liveIds.has(m.id),
 				}));
-
-			// Also return any other live models not in our static metadata as available
-			const staticIds = new Set(result.map(r => r.id));
-			for (const id of liveIds) {
-				if (staticIds.has(id)) { continue; }
-				if (id.toLowerCase().includes('gemma')) { continue; }
-				if (/embed|safety|reward|guard|clip|vila|deplot|kosmos|parse|detector|retriev/i.test(id)) { continue; }
-				result.push({ id, available: true });
-			}
 
 			return result;
 		} catch {

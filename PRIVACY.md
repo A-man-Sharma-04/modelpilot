@@ -19,3 +19,12 @@ Your API keys are stored locally on your machine using VS Code's native `SecretS
 ## 4. Workspace Context and Files
 *   **Context Scope**: Only the relevant code snippets, active files list, and queries you submit are sent to the AI providers to fulfill completion requests.
 *   **Local Processing**: Directory scanning, file searches, diff calculations, and workspace indexing are done entirely locally on your machine.
+
+## 5. Third-Party Provider Privacy
+
+When you send a request through ModelPilot, your message content is transmitted to your selected AI provider under their respective privacy policies:
+- [NVIDIA Privacy Policy](https://www.nvidia.com/en-us/about-nvidia/privacy-policy/)
+- [Groq Privacy Policy](https://groq.com/privacy-policy/)
+- [OpenRouter Privacy Policy](https://openrouter.ai/privacy)
+
+ModelPilot has no control over how providers handle, log, or retain submitted content. Review each provider's policy before submitting sensitive or proprietary code.

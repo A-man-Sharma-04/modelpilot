@@ -30,11 +30,17 @@ export function getWorkspaceRoot(): string {
 	return os.homedir();
 }
 
-export function getWorkspacePath(relPath: string): string {
+export function getWorkspacePath(relPath: string, agentCwd: string = '.'): string {
 	const root = getWorkspaceRoot();
-	const resolved = path.resolve(root, relPath);
-	if (!resolved.startsWith(root)) {
-		throw new Error(`Access Denied: Path "${relPath}" is outside the workspace root.`);
+	let resolved: string;
+	if (path.isAbsolute(relPath)) {
+		resolved = path.resolve(relPath);
+	} else {
+		resolved = path.resolve(root, agentCwd, relPath);
+	}
+	const isInside = resolved === root || resolved.startsWith(root + path.sep);
+	if (!isInside) {
+		throw new Error(`Access Denied: Path "${relPath}" resolves to "${resolved}" which is outside the workspace root.`);
 	}
 	return resolved;
 }
@@ -158,60 +164,105 @@ export class AgentExecutor {
 		return ['read_file', 'write_file', 'create_file', 'delete_file', 'run_terminal_command'].includes(toolName);
 	}
 
-	static async execute(toolName: string, args: any, abortSignal?: AbortSignal): Promise<string> {
+	static async execute(toolName: string, args: any, agentCwd: string, abortSignal?: AbortSignal): Promise<{ result: string; newCwd?: string }> {
+		if (!args || typeof args !== 'object') {
+			throw new Error(`Invalid arguments format: Expected a key-value object.`);
+		}
+
 		switch (toolName) {
 			case 'read_file':
-				return await this.readFile(args.path);
+				if (typeof args.path !== 'string' || !args.path) {
+					throw new Error(`Missing or invalid required argument: 'path' must be a non-empty string.`);
+				}
+				return { result: await this.readFile(args.path, agentCwd) };
 			case 'write_file':
-				return await this.writeFile(args.path, args.content);
+				if (typeof args.path !== 'string' || !args.path) {
+					throw new Error(`Missing or invalid required argument: 'path' must be a non-empty string.`);
+				}
+				if (typeof args.content !== 'string') {
+					throw new Error(`Missing or invalid required argument: 'content' must be a string.`);
+				}
+				return { result: await this.writeFile(args.path, args.content, agentCwd) };
 			case 'create_file':
-				return await this.createFile(args.path, args.content);
+				if (typeof args.path !== 'string' || !args.path) {
+					throw new Error(`Missing or invalid required argument: 'path' must be a non-empty string.`);
+				}
+				if (typeof args.content !== 'string') {
+					throw new Error(`Missing or invalid required argument: 'content' must be a string.`);
+				}
+				return { result: await this.createFile(args.path, args.content, agentCwd) };
 			case 'delete_file':
-				return await this.deleteFile(args.path);
+				if (typeof args.path !== 'string' || !args.path) {
+					throw new Error(`Missing or invalid required argument: 'path' must be a non-empty string.`);
+				}
+				return { result: await this.deleteFile(args.path, agentCwd) };
 			case 'search_workspace':
-				return await this.searchWorkspace(args.query);
+				if (typeof args.query !== 'string') {
+					throw new Error(`Missing or invalid required argument: 'query' must be a string.`);
+				}
+				return { result: await this.searchWorkspace(args.query, agentCwd) };
 			case 'list_directory':
-				return await this.listDirectory(args.path);
+				if (args.path !== undefined && typeof args.path !== 'string') {
+					throw new Error(`Invalid argument: 'path' must be a string.`);
+				}
+				return { result: await this.listDirectory(args.path, agentCwd) };
 			case 'get_open_files':
-				return this.getOpenFiles();
+				return { result: this.getOpenFiles() };
 			case 'run_terminal_command':
-				return await this.runTerminalCommand(args.command, abortSignal);
+				if (typeof args.command !== 'string' || !args.command) {
+					throw new Error(`Missing or invalid required argument: 'command' must be a non-empty string.`);
+				}
+				return await this.runTerminalCommand(args.command, agentCwd, abortSignal);
 			default:
 				throw new Error(`Unknown tool: ${toolName}`);
 		}
 	}
 
-	private static async readFile(relPath: string): Promise<string> {
-		const p = getWorkspacePath(relPath);
+	private static async readFile(relPath: string, agentCwd: string): Promise<string> {
+		const p = getWorkspacePath(relPath, agentCwd);
 		const content = await fs.promises.readFile(p, 'utf8');
 		const maxChars = 10000;
 		if (content.length > maxChars) {
-			return `${content.slice(0, maxChars)}\n\n[NOTE: File content truncated for length. Only first ${maxChars} characters shown out of ${content.length}.]`;
+			const head = content.slice(0, 5000);
+			const tail = content.slice(-5000);
+			return `${head}\n\n[NOTE: File content truncated for length. Showing first 5000 and last 5000 characters out of ${content.length} total.]\n\n${tail}`;
 		}
 		return content;
 	}
 
-	private static async writeFile(relPath: string, content: string): Promise<string> {
-		const p = getWorkspacePath(relPath);
+	private static async writeFile(relPath: string, content: string, agentCwd: string): Promise<string> {
+		const p = getWorkspacePath(relPath, agentCwd);
 		await fs.promises.writeFile(p, content, 'utf8');
+		try {
+			const doc = await vscode.workspace.openTextDocument(p);
+			await vscode.window.showTextDocument(doc, { preview: false });
+		} catch {
+			// Ignore editor opening errors in headless test environments
+		}
 		return `File "${relPath}" updated successfully.`;
 	}
 
-	private static async createFile(relPath: string, content: string): Promise<string> {
-		const p = getWorkspacePath(relPath);
+	private static async createFile(relPath: string, content: string, agentCwd: string): Promise<string> {
+		const p = getWorkspacePath(relPath, agentCwd);
 		const dir = path.dirname(p);
 		await fs.promises.mkdir(dir, { recursive: true });
 		await fs.promises.writeFile(p, content, 'utf8');
+		try {
+			const doc = await vscode.workspace.openTextDocument(p);
+			await vscode.window.showTextDocument(doc, { preview: false });
+		} catch {
+			// Ignore editor opening errors in headless test environments
+		}
 		return `File "${relPath}" created successfully.`;
 	}
 
-	private static async deleteFile(relPath: string): Promise<string> {
-		const p = getWorkspacePath(relPath);
+	private static async deleteFile(relPath: string, agentCwd: string): Promise<string> {
+		const p = getWorkspacePath(relPath, agentCwd);
 		await fs.promises.unlink(p);
 		return `File "${relPath}" deleted successfully.`;
 	}
 
-	private static async searchWorkspace(query: string): Promise<string> {
+	private static async searchWorkspace(query: string, agentCwd: string): Promise<string> {
 		const root = getWorkspaceRoot();
 		const files = await vscode.workspace.findFiles('**/*', '**/node_modules/**');
 		const results: string[] = [];
@@ -250,8 +301,8 @@ export class AgentExecutor {
 		return results.length > 0 ? results.join('\n') : 'No matching query results found.';
 	}
 
-	private static async listDirectory(relPath: string): Promise<string> {
-		const p = getWorkspacePath(relPath || '.');
+	private static async listDirectory(relPath: string, agentCwd: string): Promise<string> {
+		const p = getWorkspacePath(relPath || '.', agentCwd);
 		const entries = await fs.promises.readdir(p, { withFileTypes: true });
 		entries.sort((a, b) => a.name.localeCompare(b.name));
 		let results = entries.map(e => `${e.isDirectory() ? '[DIR]' : '[FILE]'} ${e.name}`);
@@ -274,13 +325,24 @@ export class AgentExecutor {
 		return unique.length > 0 ? unique.join('\n') : 'No active text files open in editor.';
 	}
 
-	private static async runTerminalCommand(command: string, abortSignal?: AbortSignal): Promise<string> {
+	private static async runTerminalCommand(command: string, agentCwd: string, abortSignal?: AbortSignal): Promise<{ result: string; newCwd?: string }> {
 		let root: string;
 		try {
 			root = getWorkspaceRoot();
 		} catch {
 			root = os.homedir();
 		}
+
+		let commandCwd = root;
+		try {
+			const resolved = path.resolve(root, agentCwd);
+			if (resolved === root || resolved.startsWith(root + path.sep)) {
+				commandCwd = resolved;
+			}
+		} catch {
+			// fallback to root
+		}
+
 		const channel = getOutputChannel();
 		channel.clear();
 		channel.show(true);
@@ -289,14 +351,20 @@ export class AgentExecutor {
 
 		return new Promise((resolve) => {
 			if (abortSignal?.aborted) {
-				return resolve('Command cancelled by user.');
+				return resolve({ result: 'Command cancelled by user.' });
 			}
 
-			const proc = spawn(command, {
+			const isWin = os.platform() === 'win32';
+			const suffix = isWin ? ' & echo MODELPILOT_PWD:%CD%' : ' ; echo "MODELPILOT_PWD:$(pwd)"';
+			const fullCommand = command + suffix;
+
+			const proc = spawn(fullCommand, {
 				shell: true,
-				cwd: root,
+				cwd: commandCwd,
 				detached: true,
 			});
+
+			proc.stdin?.end();
 
 			let output = '';
 
@@ -310,33 +378,63 @@ export class AgentExecutor {
 				} catch {
 					proc.kill();
 				}
-				resolve('Command cancelled by user.');
+				resolve({ result: 'Command cancelled by user.' });
 			};
 			abortSignal?.addEventListener('abort', abortListener);
 
-			proc.stdout.on('data', (data) => {
+			const appendToOutput = (data: Buffer) => {
 				const text = data.toString();
 				output += text;
-				channel.append(text);
-			});
 
-			proc.stderr.on('data', (data) => {
-				const text = data.toString();
-				output += text;
-				channel.append(text);
-			});
+				if (text.includes('MODELPILOT_PWD:')) {
+					const lines = text.split('\n');
+					for (const line of lines) {
+						if (!line.includes('MODELPILOT_PWD:')) {
+							channel.append(line + (lines.length > 1 ? '\n' : ''));
+						}
+					}
+				} else {
+					channel.append(text);
+				}
+			};
+
+			proc.stdout.on('data', appendToOutput);
+			proc.stderr.on('data', appendToOutput);
 
 			proc.on('close', (code) => {
 				if (abortSignal) {
 					abortSignal.removeEventListener('abort', abortListener);
 				}
 				channel.appendLine(`\nProcess exited with code ${code}`);
+
+				let finalPwd = '';
+				const pwdMatch = output.match(/MODELPILOT_PWD:([^\r\n]+)/);
+				if (pwdMatch) {
+					finalPwd = pwdMatch[1].trim();
+					output = output.replace(/MODELPILOT_PWD:[^\r\n]*\r?\n?/g, '');
+				}
+
+				let newCwd: string | undefined;
+				if (finalPwd) {
+					try {
+						const rel = path.relative(root, finalPwd);
+						if (!rel.startsWith('..') && !path.isAbsolute(rel)) {
+							newCwd = rel || '.';
+						}
+					} catch {
+						// ignore
+					}
+				}
+
 				const maxChars = 10000;
 				let finalOutput = output;
 				if (finalOutput.length > maxChars) {
-					finalOutput = `[NOTE: Command output truncated for length. Showing last ${maxChars} characters of ${finalOutput.length} total.]\n\n... (truncated) ...\n\n${finalOutput.slice(-maxChars)}`;
+					const head = finalOutput.slice(0, 2000);
+					const tail = finalOutput.slice(-8000);
+					finalOutput = `${head}\n\n[NOTE: Command output truncated for length. Showing first 2000 and last 8000 characters out of ${finalOutput.length} total.]\n\n${tail}`;
 				}
-				resolve(finalOutput || `Process finished with exit code ${code}`);
+				const resultStr = finalOutput || (code === 0 ? '[Command executed successfully with no output. Exit code: 0]' : `[Command exited with code ${code} and no output]`);
+				resolve({ result: resultStr, newCwd });
 			});
 
 			proc.on('error', (err) => {
@@ -344,7 +442,7 @@ export class AgentExecutor {
 					abortSignal.removeEventListener('abort', abortListener);
 				}
 				channel.appendLine(`\nError: ${err.message}`);
-				resolve(`Failed to start command execution: ${err.message}`);
+				resolve({ result: `Failed to start command execution: ${err.message}` });
 			});
 		});
 	}

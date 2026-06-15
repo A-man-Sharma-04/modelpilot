@@ -6,20 +6,47 @@
   "icon": "images/icon.png",
   "description": "Stop comparing AI models. ModelPilot recommends the most suitable available model for your task and routes your requests automatically.",
   "version": "0.1.0",
+  "preview": false,
   "engines": {
     "vscode": "^1.120.0"
   },
+  "extensionPack": [
+    "github.copilot-chat"
+  ],
+  "galleryBanner": {
+    "color": "#0f172a",
+    "theme": "dark"
+  },
+  "enabledApiProposals": [
+    "defaultChatParticipant"
+  ],
   "categories": [
     "AI",
+    "Chat",
+    "Programming Languages",
     "Other"
   ],
   "keywords": [
+    "modelpilot",
+    "copilot",
     "ai",
     "routing",
     "agent",
     "groq",
     "nvidia",
-    "openrouter"
+    "nvidia nim",
+    "openrouter",
+    "llm",
+    "chatbot",
+    "free ai",
+    "coding assistant",
+    "security",
+    "ctf",
+    "hackthebox",
+    "deepseek",
+    "cybersecurity",
+    "chat participant",
+    "model routing"
   ],
   "license": "MIT",
   "repository": {
@@ -93,28 +120,109 @@
           "default": true,
           "description": "Stream responses token by token as they arrive.",
           "order": 5
+        },
+        "modelpilot.approvalMode": {
+          "type": "string",
+          "default": "default",
+          "enum": [
+            "default",
+            "bypass",
+            "autopilot"
+          ],
+          "enumDescriptions": [
+            "Default - Prompt for approval on all modifying operations (human-in-the-loop)",
+            "Bypass - Automatically approve all tool and command executions",
+            "Autopilot - Automatically approve all tool executions and run autonomously"
+          ],
+          "description": "Approval mode for workspace tools and terminal commands.",
+          "order": 6
+        },
+        "modelpilot.defaultMode": {
+          "type": "string",
+          "default": "default",
+          "enum": [
+            "default",
+            "ask",
+            "plan",
+            "agent"
+          ],
+          "enumDescriptions": [
+            "Default - Automatically select mode based on request commands or user intent classification",
+            "Ask - Conversational support mode (equivalent to /ask, no tool execution)",
+            "Plan - Plan formulation mode (equivalent to /plan, generates implementation plans)",
+            "Agent - Autonomous agent mode (equivalent to /agent, executes tasks using tools)"
+          ],
+          "description": "Default mode of operation when no slash command is explicitly entered in chat.",
+          "order": 7
         }
       }
     },
-    "viewsContainers": {
-      "activitybar": [
-        {
-          "id": "modelpilot",
-          "title": "ModelPilot",
-          "icon": "$(rocket)"
-        }
-      ]
-    },
-    "views": {
-      "modelpilot": [
-        {
-          "type": "webview",
-          "id": "modelpilot.chatView",
-          "name": "Chat",
-          "icon": "$(comment-discussion)"
-        }
-      ]
-    }
+    "chatParticipants": [
+      {
+        "id": "modelpilot.chatParticipant",
+        "name": "modelpilot",
+        "description": "Smart model routing and provider aggregation.",
+        "isDefault": false,
+        "commands": [
+          {
+            "name": "ask",
+            "description": "Ask Mode - conversational support, no tool executions"
+          },
+          {
+            "name": "plan",
+            "description": "Plan Mode - generate a structured step-by-step implementation plan"
+          },
+          {
+            "name": "agent",
+            "description": "Agent Mode - autonomous task execution with tools and commands"
+          },
+          {
+            "name": "general",
+            "description": "General profile - fast conversational queries"
+          },
+          {
+            "name": "coding",
+            "description": "Coding Expert - software engineering, code generation and review"
+          },
+          {
+            "name": "reverse-engineering",
+            "description": "Reverse Engineering Expert - assembly, decompilers, ELF/PE analysis"
+          },
+          {
+            "name": "binary-exploitation",
+            "description": "Binary Exploitation Expert - buffer overflows, ROP chains, pwntools"
+          },
+          {
+            "name": "web-security",
+            "description": "Web Security Expert - XSS, SQLi, SSRF, web vulnerabilities"
+          },
+          {
+            "name": "malware-analysis",
+            "description": "Malware Analysis Expert - triage, IOC extraction, behavioral analysis"
+          },
+          {
+            "name": "cryptography",
+            "description": "Cryptography Expert - CTF crypto, cipher analysis, encoding"
+          },
+          {
+            "name": "linux",
+            "description": "Linux Expert - system admin, shell scripting, internals"
+          },
+          {
+            "name": "writing",
+            "description": "Writing Expert - reports, documentation, creative writing"
+          },
+          {
+            "name": "documentation",
+            "description": "Documentation Expert - READMEs, API docs, technical guides"
+          },
+          {
+            "name": "learning",
+            "description": "Learning Expert - explanations, tutorials, concept breakdowns"
+          }
+        ]
+      }
+    ]
   },
   "scripts": {
     "vscode:prepublish": "npm run package",
