@@ -24,6 +24,10 @@
 
 ---
 
+<p align="center">
+  <img src="./images/modelpilot_demo.gif" width="600" alt="ModelPilot Demo Walkthrough"/>
+</p>
+
 ModelPilot is a workspace-aware AI coding assistant integrated directly into VS Code as a native GitHub Copilot Chat Participant. It dynamically routes requests to the most suitable available model (across Groq, NVIDIA NIM, and OpenRouter) and runs an autonomous workspace agent loop to read, write, create, and delete files, or run terminal commands under a secure, human-in-the-loop approval system.
 
 ## Why ModelPilot?
@@ -138,16 +142,16 @@ ModelPilot contributes the following settings to VS Code:
 To build and run ModelPilot from source:
 
 1. Clone the repository and install dependencies:
-   ```bash
+   ```
    npm install
    ```
 2. Compile the extension:
-   ```bash
+   ```
    npm run compile
    ```
 3. Open the repository in VS Code and press `F5` to launch the Extension Development Host.
 4. Run unit and integration tests:
-   ```bash
+   ```
    npm run test
    ```
 

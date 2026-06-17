@@ -1252,9 +1252,95 @@ export function activate(context: vscode.ExtensionContext) {
 			if (!picked) { return; }
 
 			globalExpertProfile = picked.id;
-			vscode.window.showInformationMessage(`ModelPilot: Selected expert profile ${picked.label}.`);
 		}),
+
+		vscode.commands.registerCommand('modelpilot.explainCode', () => {
+			return runInlineAction('Explain the following code, detailing its behavior, logic, and potential edge cases');
+		}),
+		vscode.commands.registerCommand('modelpilot.fixCode', () => {
+			return runInlineAction('Fix any bugs, errors, or inefficiencies in the following code and write the corrected implementation');
+		}),
+		vscode.commands.registerCommand('modelpilot.reviewCode', () => {
+			return runInlineAction('Perform a comprehensive code review of the following block, identifying style issues, potential bugs, or improvements');
+		}),
+		vscode.commands.registerCommand('modelpilot.generateTests', () => {
+			return runInlineAction('Generate robust unit tests for the following code, covering positive, negative, and edge cases');
+		}),
+	);
+
+	context.subscriptions.push(
+		vscode.languages.registerCodeActionsProvider(
+			{ pattern: '**/*' },
+			new ModelPilotCodeActionProvider(),
+			{
+				providedCodeActionKinds: [
+					vscode.CodeActionKind.Refactor,
+					vscode.CodeActionKind.QuickFix
+				]
+			}
+		)
 	);
 }
 
 export function deactivate() { }
+
+async function runInlineAction(promptPrefix: string, expertId = 'coding') {
+	const editor = vscode.window.activeTextEditor;
+	if (!editor) {
+		vscode.window.showWarningMessage('No active editor found.');
+		return;
+	}
+	const selection = editor.selection;
+	const selectedText = editor.document.getText(selection);
+	if (!selectedText.trim()) {
+		vscode.window.showWarningMessage('Please select some code first.');
+		return;
+	}
+
+	await vscode.commands.executeCommand('workbench.action.chat.open', {
+		query: `@modelpilot /${expertId} ${promptPrefix}:\n\n\`\`\`\n${selectedText}\n\`\`\``
+	});
+}
+
+class ModelPilotCodeActionProvider implements vscode.CodeActionProvider {
+	provideCodeActions(
+		document: vscode.TextDocument,
+		range: vscode.Range | vscode.Selection,
+		context: vscode.CodeActionContext,
+		token: vscode.CancellationToken
+	): vscode.ProviderResult<(vscode.CodeAction | vscode.Command)[]> {
+		if (range.isEmpty) {
+			return [];
+		}
+		const nonCodeLanguages = ['plaintext', 'markdown', 'json', 'jsonc', 'log', 'csv', 'xml', 'svg', 'ini', 'properties', 'dotenv'];
+		if (nonCodeLanguages.includes(document.languageId)) {
+			return [];
+		}
+
+		const explainAction = new vscode.CodeAction('ModelPilot: Explain Code', vscode.CodeActionKind.Refactor);
+		explainAction.command = {
+			command: 'modelpilot.explainCode',
+			title: 'Explain Code',
+		};
+
+		const fixAction = new vscode.CodeAction('ModelPilot: Fix Code', vscode.CodeActionKind.QuickFix);
+		fixAction.command = {
+			command: 'modelpilot.fixCode',
+			title: 'Fix Code',
+		};
+
+		const reviewAction = new vscode.CodeAction('ModelPilot: Review Code', vscode.CodeActionKind.Refactor);
+		reviewAction.command = {
+			command: 'modelpilot.reviewCode',
+			title: 'Review Code',
+		};
+
+		const testAction = new vscode.CodeAction('ModelPilot: Generate Tests', vscode.CodeActionKind.Refactor);
+		testAction.command = {
+			command: 'modelpilot.generateTests',
+			title: 'Generate Tests',
+		};
+
+		return [explainAction, fixAction, reviewAction, testAction];
+	}
+}

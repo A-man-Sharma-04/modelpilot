@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.0
+
+### Added
+- **Inline Code Actions**: Integrated right-click context menu actions in the editor for Explain Code, Fix Code, Review Code, and Generate Tests. Includes dynamic checks to filter out non-code file types (markdown, json, plaintext, etc.).
+
+### Changed
+- **Workspace Tool Prioritization**: Configured the agent loop to prefer directly writing and creating files in the workspace (using `create_file` / `write_file`) rather than only showing code blocks in the chat response.
+
 ## 0.1.0
 
 ### Added

@@ -5,10 +5,10 @@
   "author": "Aman Sharma Dev",
   "icon": "images/icon.png",
   "description": "Stop comparing AI models. ModelPilot recommends the most suitable available model for your task and routes your requests automatically.",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "preview": false,
   "engines": {
-    "vscode": "^1.120.0"
+    "vscode": "^1.90.0"
   },
   "extensionPack": [
     "github.copilot-chat"
@@ -80,6 +80,22 @@
       {
         "command": "modelpilot.addApiKey",
         "title": "ModelPilot: Add API Key"
+      },
+      {
+        "command": "modelpilot.explainCode",
+        "title": "ModelPilot: Explain Code"
+      },
+      {
+        "command": "modelpilot.fixCode",
+        "title": "ModelPilot: Fix Code"
+      },
+      {
+        "command": "modelpilot.reviewCode",
+        "title": "ModelPilot: Review Code"
+      },
+      {
+        "command": "modelpilot.generateTests",
+        "title": "ModelPilot: Generate Tests"
       }
     ],
     "configuration": {
@@ -222,7 +238,31 @@
           }
         ]
       }
-    ]
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "command": "modelpilot.explainCode",
+          "group": "modelpilot@1",
+          "when": "editorHasSelection"
+        },
+        {
+          "command": "modelpilot.fixCode",
+          "group": "modelpilot@2",
+          "when": "editorHasSelection"
+        },
+        {
+          "command": "modelpilot.reviewCode",
+          "group": "modelpilot@3",
+          "when": "editorHasSelection"
+        },
+        {
+          "command": "modelpilot.generateTests",
+          "group": "modelpilot@4",
+          "when": "editorHasSelection"
+        }
+      ]
+    }
   },
   "scripts": {
     "vscode:prepublish": "npm run package",
@@ -239,7 +279,7 @@
     "test": "vscode-test"
   },
   "devDependencies": {
-    "@types/vscode": "^1.120.0",
+    "@types/vscode": "^1.90.0",
     "@types/mocha": "^10.0.10",
     "@types/node": "22.x",
     "typescript-eslint": "^8.56.1",
