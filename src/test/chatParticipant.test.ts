@@ -9,6 +9,7 @@ import { Router } from '../engine/Router';
 import { SecretsManager } from '../secrets';
 import { healthMonitor } from '../engine/HealthMonitor';
 import { getWorkspaceRoot } from '../engine/AgentExecutor';
+import { OpenAICompatibleProvider } from '../providers/OpenAICompatibleProvider';
 
 suite('ModelPilot Chat Participant Integration Tests', () => {
 	let originalRoute: any;
@@ -2103,6 +2104,154 @@ suite('ModelPilot Chat Participant Integration Tests', () => {
 		for (const [name] of exportFiles) {
 			const fileUri = vscode.Uri.joinPath(rootUri, name);
 			await vscode.workspace.fs.delete(fileUri);
+		}
+	});
+
+	test('should rotate key immediately on 429 rate limit without retrying same key', async () => {
+		const originalFetch = global.fetch;
+		const requestedKeys: string[] = [];
+		
+		// Create a test provider
+		class TestProvider extends OpenAICompatibleProvider {
+			readonly name = 'test-provider';
+			readonly baseUrl = 'https://api.example.com';
+			constructor(readonly apiKeys: string[]) {
+				super();
+			}
+			async listModels() {
+				return [];
+			}
+		}
+
+		const provider = new TestProvider(['key-0', 'key-1']);
+
+		// Mock global.fetch
+		// @ts-ignore
+		global.fetch = async (url: string, init?: any) => {
+			const authHeader = init?.headers?.['Authorization'] || '';
+			const key = authHeader.replace('Bearer ', '').trim();
+			requestedKeys.push(key);
+
+			if (key === 'key-0') {
+				return {
+					status: 429,
+					ok: false,
+					text: async () => 'Rate limit exceeded',
+				} as any;
+			}
+
+			if (key === 'key-1') {
+				return {
+					status: 200,
+					ok: true,
+					json: async () => ({
+						choices: [
+							{
+								message: {
+									content: 'Response from key-1',
+								},
+							},
+						],
+					}),
+				} as any;
+			}
+
+			return {
+				status: 500,
+				ok: false,
+				text: async () => 'Internal Server Error',
+			} as any;
+		};
+
+		try {
+			const result = await provider.chat('some-model', [{ role: 'user', content: 'test' }]);
+			assert.strictEqual(result.content, 'Response from key-1');
+			assert.deepStrictEqual(requestedKeys, ['key-0', 'key-1']);
+			
+			// Verify state is saved, next request should use key-1 directly
+			requestedKeys.length = 0;
+			const result2 = await provider.chat('some-model', [{ role: 'user', content: 'test2' }]);
+			assert.strictEqual(result2.content, 'Response from key-1');
+			assert.deepStrictEqual(requestedKeys, ['key-1']);
+		} finally {
+			global.fetch = originalFetch;
+		}
+	});
+
+	test('should wait for shortest key cooldown and retry if all keys are in cooldown', async () => {
+		const originalFetch = global.fetch;
+		const requestedKeys: string[] = [];
+		let key0CallCount = 0;
+
+		class TestProvider extends OpenAICompatibleProvider {
+			readonly name = 'test-provider-cooldown';
+			readonly baseUrl = 'https://api.example.com';
+			constructor(readonly apiKeys: string[]) {
+				super();
+			}
+			async listModels() {
+				return [];
+			}
+		}
+
+		const provider = new TestProvider(['key-0', 'key-1']);
+
+		// Mock global.fetch
+		// @ts-ignore
+		global.fetch = async (url: string, init?: any) => {
+			const authHeader = init?.headers?.['Authorization'] || '';
+			const key = authHeader.replace('Bearer ', '').trim();
+			requestedKeys.push(key);
+
+			if (key === 'key-0') {
+				key0CallCount++;
+				if (key0CallCount === 1) {
+					return {
+						status: 429,
+						ok: false,
+						headers: {
+							get: (name: string) => name.toLowerCase() === 'retry-after' ? '1' : null
+						},
+						text: async () => '{"error": {"retry_after_seconds": 1}}',
+					} as any;
+				}
+				return {
+					status: 200,
+					ok: true,
+					json: async () => ({
+						choices: [{ message: { content: 'Success on key-0 after wait' } }],
+					}),
+				} as any;
+			}
+
+			if (key === 'key-1') {
+				return {
+					status: 429,
+					ok: false,
+					headers: {
+						get: (name: string) => name.toLowerCase() === 'retry-after' ? '2' : null
+					},
+					text: async () => '{"error": {"retry_after_seconds": 2}}',
+				} as any;
+			}
+
+			return {
+				status: 500,
+				ok: false,
+				text: async () => 'Internal Error',
+			} as any;
+		};
+
+		try {
+			const startTime = Date.now();
+			const result = await provider.chat('some-model', [{ role: 'user', content: 'test' }]);
+			const duration = Date.now() - startTime;
+
+			assert.strictEqual(result.content, 'Success on key-0 after wait');
+			assert.deepStrictEqual(requestedKeys, ['key-0', 'key-1', 'key-0']);
+			assert.ok(duration >= 1000, `Should have waited at least 1s (got ${duration}ms)`);
+		} finally {
+			global.fetch = originalFetch;
 		}
 	});
 });

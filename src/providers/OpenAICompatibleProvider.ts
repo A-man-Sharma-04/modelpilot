@@ -34,6 +34,9 @@ export abstract class OpenAICompatibleProvider implements IProvider {
 	abstract readonly baseUrl: string;
 	abstract readonly apiKeys: string[];
 
+	private activeKeyIndex = 0;
+	private keyCooldowns = new Map<number, number>();
+
 	isConfigured(): boolean {
 		return this.apiKeys.some(k => k.trim().length > 0);
 	}
@@ -54,170 +57,83 @@ export abstract class OpenAICompatibleProvider implements IProvider {
 		context?: any,
 		options: ChatOptions = {},
 	): Promise<ChatResult> {
-		let lastError: Error | undefined;
-
 		const activeKeys = this.apiKeys.filter(k => k.trim().length > 0);
 		if (activeKeys.length === 0) {
 			throw new Error(`Provider ${this.name} has no API keys configured.`);
 		}
 
-		for (let keyIndex = 0; keyIndex < activeKeys.length; keyIndex++) {
+		const profile = getModelProfile(this.name, modelId);
+		const useNativeTools = tools && tools.length > 0 && this.name !== 'groq' && profile?.supportsNativeTools === true;
+
+		const executeWithKey = async (keyIndex: number): Promise<ChatResult> => {
 			const activeKey = activeKeys[keyIndex];
+			const makeRequest = async (withTools: boolean): Promise<ChatResult> => {
+				const body: any = {
+					model: modelId,
+					messages: withTools ? messages : formatMessagesForNonNativeTools(messages),
+					max_tokens: options.maxTokens ?? 4096,
+					stream: options.stream ?? false,
+				};
+				if (withTools) {
+					body.tools = tools;
+				}
 
-			try {
-				const profile = getModelProfile(this.name, modelId);
-				const useNativeTools = tools && tools.length > 0 && this.name !== 'groq' && profile?.supportsNativeTools === true;
+				const attemptController = new AbortController();
+				let attemptTimedOut = false;
+				const attemptTimeout = setTimeout(() => {
+					attemptTimedOut = true;
+					attemptController.abort();
+				}, options.timeout ?? 30000);
 
-				const makeRequest = async (withTools: boolean): Promise<ChatResult> => {
-					const body: any = {
-						model: modelId,
-						messages: withTools ? messages : formatMessagesForNonNativeTools(messages),
-						max_tokens: options.maxTokens ?? 4096,
-						stream: options.stream ?? false,
-					};
-					if (withTools) {
-						body.tools = tools;
+				const abortListener = () => {
+					attemptController.abort();
+				};
+
+				if (options.abortSignal) {
+					if (options.abortSignal.aborted) {
+						attemptController.abort();
+					} else {
+						options.abortSignal.addEventListener('abort', abortListener);
+					}
+				}
+
+				try {
+					const response = await fetch(`${this.baseUrl}/chat/completions`, {
+						method: 'POST',
+						headers: this.getHeaders(activeKey),
+						body: JSON.stringify(body),
+						signal: attemptController.signal,
+					});
+
+					clearTimeout(attemptTimeout);
+					if (options.abortSignal) {
+						options.abortSignal.removeEventListener('abort', abortListener);
 					}
 
-					let response: Response | undefined;
-					const maxRetries = 2; // Allow up to 2 retries (3 attempts total) per key
-					let attempt = 0;
-
-					while (attempt <= maxRetries) {
-						const attemptController = new AbortController();
-						let attemptTimedOut = false;
-						const attemptTimeout = setTimeout(() => {
-							attemptTimedOut = true;
-							attemptController.abort();
-						}, options.timeout ?? 30000);
-
-						const abortListener = () => {
-							attemptController.abort();
-						};
-
-						if (options.abortSignal) {
-							if (options.abortSignal.aborted) {
-								attemptController.abort();
-							} else {
-								options.abortSignal.addEventListener('abort', abortListener);
-							}
-						}
-
+					if (response.status === 429) {
+						const errText = await response.text();
+						let retryAfter = 10;
 						try {
-							response = await fetch(`${this.baseUrl}/chat/completions`, {
-								method: 'POST',
-								headers: this.getHeaders(activeKey),
-								body: JSON.stringify(body),
-								signal: attemptController.signal,
-							});
-
-							clearTimeout(attemptTimeout);
-							if (options.abortSignal) {
-								options.abortSignal.removeEventListener('abort', abortListener);
+							const parsed = JSON.parse(errText);
+							if (parsed.error && parsed.error.retry_after_seconds) {
+								retryAfter = Math.ceil(parseFloat(parsed.error.retry_after_seconds));
+							} else if (parsed.retry_after_seconds) {
+								retryAfter = Math.ceil(parseFloat(parsed.retry_after_seconds));
 							}
-
-							if (response.status === 429 && attempt < maxRetries) {
-								const retryAfterHeader = response.headers.get('retry-after') || response.headers.get('Retry-After');
-								let retryDelay = 2000;
-								if (retryAfterHeader) {
-									const seconds = parseInt(retryAfterHeader, 10);
-									if (!isNaN(seconds)) {
-										retryDelay = seconds * 1000;
-									} else {
-										const date = Date.parse(retryAfterHeader);
-										if (!isNaN(date)) {
-											retryDelay = Math.max(0, date - Date.now());
-										}
-									}
-								}
-
-								if (retryDelay > 3000) {
-									throw new Error(`Rate limit exceeded (429). Retry-after delay is too long (${Math.round(retryDelay / 1000)}s).`);
-								}
-
-								// Add randomized jitter of 0-1000ms
-								retryDelay += Math.floor(Math.random() * 1000);
-
-								console.warn(`Key index ${keyIndex} for provider ${this.name} hit 429. Retrying attempt ${attempt + 1}/${maxRetries} after ${retryDelay}ms...`);
-
-								await new Promise<void>((resolve, reject) => {
-									if (options.abortSignal?.aborted) {
-										return reject(new Error('Aborted'));
-									}
-									const onAbort = () => {
-										clearTimeout(timer);
-										reject(new Error('Aborted'));
-									};
-									const timer = setTimeout(() => {
-										if (options.abortSignal) {
-											options.abortSignal.removeEventListener('abort', onAbort);
-										}
-										resolve();
-									}, retryDelay);
-									if (options.abortSignal) {
-										options.abortSignal.addEventListener('abort', onAbort);
-									}
-								});
-								attempt++;
-								continue;
+						} catch {}
+						
+						const retryHeader = response.headers?.get('retry-after');
+						if (retryHeader) {
+							const parsedHeader = parseInt(retryHeader, 10);
+							if (!isNaN(parsedHeader) && parsedHeader > 0) {
+								retryAfter = parsedHeader;
 							}
-
-							break;
-						} catch (err: any) {
-							clearTimeout(attemptTimeout);
-							if (options.abortSignal) {
-								options.abortSignal.removeEventListener('abort', abortListener);
-							}
-
-							let reason = err instanceof Error ? err.message : String(err);
-							if (err && typeof err === 'object' && 'cause' in err && err.cause) {
-								const causeMsg = err.cause.message || String(err.cause);
-								reason += ` (${causeMsg})`;
-							}
-							if (attemptTimedOut) {
-								reason = `Request timed out after ${(options.timeout ?? 30000) / 1000} seconds.`;
-							}
-
-							if (options.abortSignal?.aborted || reason.includes('Aborted') || reason.includes('AbortError')) {
-								throw new Error(reason);
-							}
-
-							// If the request timed out, has DNS lookup failures, or hit a long rate limit, fail immediately without retrying
-							if (attemptTimedOut || reason.includes('EAI_AGAIN') || reason.includes('ENOTFOUND') || reason.includes('429') || reason.includes('Rate limit')) {
-								throw new Error(reason);
-							}
-
-							if (attempt < maxRetries) {
-								const retryDelay = 2000;
-								console.warn(`Key index ${keyIndex} for provider ${this.name} failed (${reason}). Retrying attempt ${attempt + 1}/${maxRetries} after ${retryDelay}ms...`);
-								await new Promise<void>((resolve, reject) => {
-									if (options.abortSignal?.aborted) {
-										return reject(new Error('Aborted'));
-									}
-									const onAbort = () => {
-										clearTimeout(timer);
-										reject(new Error('Aborted'));
-									};
-									const timer = setTimeout(() => {
-										if (options.abortSignal) {
-											options.abortSignal.removeEventListener('abort', onAbort);
-										}
-										resolve();
-									}, retryDelay);
-									if (options.abortSignal) {
-										options.abortSignal.addEventListener('abort', onAbort);
-									}
-								});
-								attempt++;
-								continue;
-							}
-
-							throw new Error(reason);
 						}
-					}
 
-					if (!response) {
-						throw new Error(`Failed to get response from ${this.name}`);
+						const err = new Error(`Rate limit exceeded (429): ${errText}`);
+						(err as any).status = 429;
+						(err as any).retryAfter = retryAfter;
+						throw err;
 					}
 
 					if (!response.ok) {
@@ -239,53 +155,147 @@ export abstract class OpenAICompatibleProvider implements IProvider {
 							}
 						}[]
 					};
-					const msg = data.choices[0].message;
-					if (!msg.content && (!msg.tool_calls || msg.tool_calls.length === 0)) {
+					const msg = data.choices?.[0]?.message;
+					if (!msg || (!msg.content && (!msg.tool_calls || msg.tool_calls.length === 0))) {
 						throw new Error('Empty response received from model.');
 					}
 					return {
 						content: msg.content ?? '',
 						toolCalls: msg.tool_calls,
 					};
-				};
-
-				if (useNativeTools) {
-					try {
-						return await makeRequest(true);
-					} catch (nativeErr: any) {
-						if (options.abortSignal?.aborted || nativeErr.message === 'Aborted' || nativeErr.status === 429 || nativeErr.message.includes('429')) {
-							throw nativeErr;
-						}
-						console.warn(`Provider ${this.name} failed with native tools: ${nativeErr.message}. Retrying without native tools...`);
-						return await makeRequest(false);
+				} catch (err: any) {
+					clearTimeout(attemptTimeout);
+					if (options.abortSignal) {
+						options.abortSignal.removeEventListener('abort', abortListener);
 					}
-				} else {
+					if (attemptTimedOut) {
+						throw new Error(`Request timed out after ${(options.timeout ?? 30000) / 1000} seconds.`);
+					}
+					throw err;
+				}
+			};
+
+			if (useNativeTools) {
+				try {
+					return await makeRequest(true);
+				} catch (nativeErr: any) {
+					if (options.abortSignal?.aborted || nativeErr.message === 'Aborted' || nativeErr.status === 429) {
+						throw nativeErr;
+					}
+					console.warn(`Provider ${this.name} failed with native tools: ${nativeErr.message}. Retrying without native tools...`);
 					return await makeRequest(false);
 				}
+			} else {
+				return await makeRequest(false);
+			}
+		};
+
+		// Pass 1: Try keys that are not in cooldown
+		const triedKeyIndices = new Set<number>();
+		let lastError: any = undefined;
+
+		const startKeyIndex = this.activeKeyIndex;
+		const attempts = activeKeys.length;
+		for (let i = 0; i < attempts; i++) {
+			const keyIndex = (startKeyIndex + i) % activeKeys.length;
+			if (triedKeyIndices.has(keyIndex)) {
+				break;
+			}
+			
+			const cooldownEnd = this.keyCooldowns.get(keyIndex) ?? 0;
+			if (cooldownEnd > Date.now()) {
+				continue;
+			}
+			
+			triedKeyIndices.add(keyIndex);
+
+			try {
+				const result = await executeWithKey(keyIndex);
+				this.activeKeyIndex = keyIndex;
+				this.keyCooldowns.delete(keyIndex);
+				return result;
 			} catch (err: any) {
-				let reason = err instanceof Error ? err.message : String(err);
-				if (err && typeof err === 'object' && 'cause' in err && err.cause) {
-					const causeMsg = err.cause.message || String(err.cause);
-					reason += ` (${causeMsg})`;
+				console.warn(`Key index ${keyIndex} for provider ${this.name} failed (${err.message || err}). Rotating to next key...`);
+				
+				let cooldownMs = 10000;
+				if (err.status === 401 || err.status === 403) {
+					cooldownMs = 3600 * 1000;
+				} else if (err.status === 429) {
+					cooldownMs = (err.retryAfter ?? 10) * 1000;
+				} else if (err.message && err.message.includes('429')) {
+					const retryMatch = err.message.match(/retry_after_seconds[\":,\s]*(\d+\.?\d*)/i);
+					if (retryMatch) {
+						cooldownMs = Math.ceil(parseFloat(retryMatch[1])) * 1000;
+					}
 				}
+				this.keyCooldowns.set(keyIndex, Date.now() + cooldownMs);
+				
+				this.activeKeyIndex = (keyIndex + 1) % activeKeys.length;
+				lastError = err;
 
-				if (options.abortSignal?.aborted || reason.includes('Aborted') || reason.includes('AbortError')) {
-					throw new Error(reason);
+				if (options.abortSignal?.aborted || err.message === 'Aborted') {
+					throw err;
 				}
+			}
+		}
 
-				const status = err.status || 0;
-				if ((status === 429 || status === 502 || status === 503 || status === 504 || reason.includes('429') || reason.includes('Rate limit')) && keyIndex < activeKeys.length - 1) {
-					console.warn(`Key index ${keyIndex} for provider ${this.name} hit error/rate limit. Rotating key...`);
-					lastError = new Error(reason);
-					continue;
-				}
+		// Pass 2: If we didn't succeed, see if we can wait for a key with a short cooldown
+		const now = Date.now();
+		let minDelayMs = Infinity;
+		let bestKeyIndex = -1;
 
-				if (keyIndex < activeKeys.length - 1) {
-					console.warn(`Key index ${keyIndex} for provider ${this.name} failed (${reason}). Rotating key...`);
-					lastError = new Error(reason);
-					continue;
+		for (let i = 0; i < activeKeys.length; i++) {
+			const cooldownEnd = this.keyCooldowns.get(i) ?? 0;
+			const delay = cooldownEnd - now;
+			if (delay > 0 && delay < minDelayMs) {
+				minDelayMs = delay;
+				bestKeyIndex = i;
+			}
+		}
+
+		if (bestKeyIndex !== -1 && minDelayMs <= 30000) {
+			console.warn(`All API keys for provider ${this.name} are rate-limited/in cooldown. Waiting ${Math.ceil(minDelayMs / 1000)}s for the shortest cooldown...`);
+			
+			try {
+				await new Promise<void>((resolve, reject) => {
+					if (options.abortSignal?.aborted) {
+						return reject(new Error('Aborted'));
+					}
+					const onAbort = () => {
+						clearTimeout(timer);
+						reject(new Error('Aborted'));
+					};
+					const timer = setTimeout(() => {
+						if (options.abortSignal) {
+							options.abortSignal.removeEventListener('abort', onAbort);
+						}
+						resolve();
+					}, minDelayMs + Math.floor(Math.random() * 500));
+					if (options.abortSignal) {
+						options.abortSignal.addEventListener('abort', onAbort);
+					}
+				});
+
+				const result = await executeWithKey(bestKeyIndex);
+				this.activeKeyIndex = bestKeyIndex;
+				this.keyCooldowns.delete(bestKeyIndex);
+				return result;
+			} catch (err: any) {
+				let cooldownMs = 10000;
+				if (err.status === 401 || err.status === 403) {
+					cooldownMs = 3600 * 1000;
+				} else if (err.status === 429) {
+					cooldownMs = (err.retryAfter ?? 10) * 1000;
+				} else if (err.message && err.message.includes('429')) {
+					const retryMatch = err.message.match(/retry_after_seconds[\":,\s]*(\d+\.?\d*)/i);
+					if (retryMatch) {
+						cooldownMs = Math.ceil(parseFloat(retryMatch[1])) * 1000;
+					}
 				}
-				throw new Error(reason);
+				this.keyCooldowns.set(bestKeyIndex, Date.now() + cooldownMs);
+				
+				this.activeKeyIndex = (bestKeyIndex + 1) % activeKeys.length;
+				lastError = err;
 			}
 		}
 

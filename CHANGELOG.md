@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.0
+
+### Added
+- **API Key Rotation & Rate Limit Auto-detection**: Automatically rotate configured API keys for a provider upon encountering a `429` (Rate Limit) error. The rotated key will be tried immediately for the current request, and subsequent requests will continue to use the last working key.
+
 ## 0.3.0
 
 ### Added
