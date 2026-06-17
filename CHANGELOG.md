@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.0
+
+### Added
+- **Conversation Export**: Added a new `@modelpilot /export` chat subcommand to easily export the active conversation history into a clean, formatted Markdown file (`modelpilot-chat-export-[timestamp].md`) inside the workspace root.
+
 ## 0.2.0
 
 ### Added

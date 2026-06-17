@@ -257,6 +257,33 @@ export async function handleChatRequest(
 		return;
 	}
 
+	if (request.command === 'export') {
+		let rootUri: vscode.Uri;
+		const workspaceFolders = vscode.workspace.workspaceFolders;
+		let pathLabel = '';
+		if (workspaceFolders && workspaceFolders.length > 0) {
+			rootUri = workspaceFolders[0].uri;
+			pathLabel = 'workspace root';
+		} else {
+			rootUri = vscode.Uri.file(os.tmpdir());
+			pathLabel = 'system temp directory';
+		}
+
+		const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+		const fileName = `modelpilot-chat-export-${timestamp}.md`;
+		const fileUri = vscode.Uri.joinPath(rootUri, fileName);
+
+		const markdownContent = exportChatToMarkdown(chatContext);
+
+		try {
+			await vscode.workspace.fs.writeFile(fileUri, Buffer.from(markdownContent, 'utf8'));
+			response.markdown(`✅ **Chat successfully exported!**\n\nThe conversation history has been written to the ${pathLabel}: [${fileName}](${fileUri.toString()})`);
+		} catch (err: any) {
+			response.markdown(`❌ **Error writing export file:** ${err.message || String(err)}`);
+		}
+		return;
+	}
+
 	// Try decomposition first (only if no explicit slash command is entered, or if command is not a specific expert command)
 	const isSlashCommand = request.command && request.command !== 'general' && request.command !== 'ask' && request.command !== 'plan' && request.command !== 'agent';
 	const decomposed = isSlashCommand ? null : decompose(request.prompt);
@@ -1343,4 +1370,43 @@ class ModelPilotCodeActionProvider implements vscode.CodeActionProvider {
 
 		return [explainAction, fixAction, reviewAction, testAction];
 	}
+}
+
+function exportChatToMarkdown(chatContext: vscode.ChatContext): string {
+	let md = `# ModelPilot Chat Export\n\n`;
+	md += `*Exported on: ${new Date().toLocaleString()}*\n\n`;
+	md += `---\n\n`;
+
+	for (const turn of chatContext.history) {
+		if (turn && typeof turn === 'object' && 'prompt' in turn) {
+			md += `### 👤 User\n\n${(turn as any).prompt}\n\n`;
+		} else if (turn && typeof turn === 'object' && 'response' in turn) {
+			let responseText = '';
+			const responseParts = (turn as any).response;
+			if (Array.isArray(responseParts)) {
+				for (const part of responseParts) {
+					if (part && typeof part === 'object') {
+						if ('value' in part) {
+							const val = (part as any).value;
+							if (typeof val === 'string') {
+								responseText += val;
+							} else if (val && typeof val === 'object' && 'value' in val) {
+								responseText += (val as any).value;
+							}
+						} else if ('markdown' in part) {
+							const mdVal = (part as any).markdown;
+							if (typeof mdVal === 'string') {
+								responseText += mdVal;
+							} else if (mdVal && typeof mdVal === 'object' && 'value' in mdVal) {
+								responseText += (mdVal as any).value;
+							}
+						}
+					}
+				}
+			}
+			md += `### 🤖 ModelPilot\n\n${responseText}\n\n`;
+			md += `---\n\n`;
+		}
+	}
+	return md;
 }

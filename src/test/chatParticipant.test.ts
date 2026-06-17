@@ -2,6 +2,7 @@ import * as assert from 'assert';
 import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
+import * as os from 'os';
 import { handleChatRequest } from '../extension';
 import { ModelRegistry } from '../registry/ModelRegistry';
 import { Router } from '../engine/Router';
@@ -2039,5 +2040,69 @@ suite('ModelPilot Chat Participant Integration Tests', () => {
 		);
 
 		assert.deepStrictEqual(routedSubtasks, ['refactor', 'test'], 'Should run subtasks sequentially');
+	});
+
+	test('should run /export command and write Markdown export to workspace', async () => {
+		const mockRequest: any = {
+			prompt: 'export this chat',
+			command: 'export',
+			references: []
+		};
+		const mockContext: any = {
+			history: [
+				{
+					prompt: 'Hello ModelPilot',
+					references: []
+				},
+				{
+					response: [
+						{ value: 'Hello User' }
+					]
+				}
+			]
+		};
+
+		const markdowns: string[] = [];
+		const mockResponseStream: any = {
+			markdown: (value: any) => {
+				markdowns.push(typeof value === 'string' ? value : value.value);
+				return mockResponseStream;
+			},
+			progress: () => mockResponseStream
+		};
+
+		const mockToken: any = {
+			isCancellationRequested: false,
+			onCancellationRequested: () => ({ dispose: () => {} })
+		};
+
+		await handleChatRequest(
+			mockRequest,
+			mockContext,
+			mockResponseStream,
+			mockToken,
+			mockSm as SecretsManager,
+			registry,
+			config,
+			async () => 3
+		);
+
+		try {
+			assert.ok(markdowns.some(m => m.includes('Chat successfully exported')));
+		} catch (err) {
+			console.log("TEST DEBUG - markdowns:", markdowns);
+			throw err;
+		}
+
+		const workspaceFolders = vscode.workspace.workspaceFolders;
+		const rootUri = workspaceFolders && workspaceFolders.length > 0 ? workspaceFolders[0].uri : vscode.Uri.file(os.tmpdir());
+		const files = await vscode.workspace.fs.readDirectory(rootUri);
+		const exportFiles = files.filter(([name]) => name.startsWith('modelpilot-chat-export-') && name.endsWith('.md'));
+		assert.ok(exportFiles.length > 0, 'An export file should have been created');
+
+		for (const [name] of exportFiles) {
+			const fileUri = vscode.Uri.joinPath(rootUri, name);
+			await vscode.workspace.fs.delete(fileUri);
+		}
 	});
 });
