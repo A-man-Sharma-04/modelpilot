@@ -82,6 +82,12 @@ Tools available:
 6. list_directory:       {"path": "rel/path"}
 7. get_open_files:       {}
 8. run_terminal_command: {"command": "non-interactive shell command"}
+
+SELF-CORRECTION PROTOCOL:
+- When a terminal command fails (non-zero exit code), a [SELF-CORRECTION REQUIRED] block will be appended to the tool result.
+- You MUST follow its instructions: analyze the error output, read the failing file(s), fix the code, write the corrected file(s), and re-run the exact same command.
+- Do NOT skip the re-run step. The correction loop continues until the command succeeds or the retry limit is reached.
+- If you cannot fix the error after the allowed retries, explain the root cause clearly and suggest a manual fix.
 `;
 
 export const MODEL_RELIABILITY_INSTRUCTIONS = `

@@ -5,7 +5,7 @@
   "author": "Aman Sharma Dev",
   "icon": "images/icon.png",
   "description": "Stop comparing AI models. ModelPilot recommends the most suitable available model for your task and routes your requests automatically.",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "preview": false,
   "engines": {
     "vscode": "^1.90.0"
@@ -170,6 +170,14 @@
           ],
           "description": "Default mode of operation when no slash command is explicitly entered in chat.",
           "order": 7
+        },
+        "modelpilot.maxAutoFixRetries": {
+          "type": "number",
+          "default": 3,
+          "minimum": 0,
+          "maximum": 10,
+          "description": "Maximum number of automatic self-correction retries when a terminal command fails. Set to 0 to disable the auto-fix loop.",
+          "order": 8
         }
       }
     },

@@ -33,6 +33,7 @@ function getConfig() {
 		stream: cfg.get<boolean>('streamResponses', true),
 		defaultExpert: cfg.get<string>('defaultExpert', DEFAULT_EXPERT_ID),
 		defaultMode: cfg.get<string>('defaultMode', 'default'),
+		maxAutoFixRetries: cfg.get<number>('maxAutoFixRetries', 3),
 	};
 }
 
@@ -782,6 +783,8 @@ ${classificationContext}`;
 
 	let loopIteration = 0;
 	let maxIterations = 15;
+	const autoFixRetryCounts = new Map<string, number>();
+	const maxAutoFixRetries = getConfig().maxAutoFixRetries;
 
 	try {
 		while (loopIteration < maxIterations) {
@@ -1050,6 +1053,25 @@ ${classificationContext}`;
 						result = execResult.result;
 						if (execResult.newCwd !== undefined) {
 							agentCwd = execResult.newCwd;
+						}
+
+						// Self-correction: detect failed terminal commands and inject a correction hint
+						if (toolName === 'run_terminal_command' && maxAutoFixRetries > 0) {
+							const exitCodeMatch = result.match(/\[Exit code: (\d+)\]/);
+							const exitCode = exitCodeMatch ? parseInt(exitCodeMatch[1], 10) : 0;
+							const cmdKey = toolArgs.command;
+							if (exitCode !== 0) {
+								const currentRetries = autoFixRetryCounts.get(cmdKey) || 0;
+								if (currentRetries < maxAutoFixRetries) {
+									autoFixRetryCounts.set(cmdKey, currentRetries + 1);
+									const attempt = currentRetries + 1;
+									response.progress(`⚡ Self-correction: analyzing errors (attempt ${attempt}/${maxAutoFixRetries})...`);
+									result += `\n\n[SELF-CORRECTION REQUIRED]\nThe command above failed with exit code ${exitCode}. You MUST:\n1. Analyze the error output above carefully\n2. Identify the root cause (file, line number, error type)\n3. Read the failing file(s) with read_file\n4. Fix the issue and write the corrected file(s) with write_file\n5. Re-run the exact same command to verify the fix\nDo NOT give up or apologize. Fix the code.\nSelf-correction attempt: ${attempt} of ${maxAutoFixRetries}`;
+								}
+							} else {
+								// Command succeeded on a retry — clear the counter
+								autoFixRetryCounts.delete(cmdKey);
+							}
 						}
 					} catch (err) {
 						result = err instanceof Error ? err.message : String(err);

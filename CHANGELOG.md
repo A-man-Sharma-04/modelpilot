@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.5.0
+
+### Added
+- **Auto-Feedback Compiler Loop (Self-Correction)**: When a terminal command fails (non-zero exit code), the agent automatically analyzes the error output, fixes the code, and re-runs the command — looping until it succeeds or the retry limit is reached. Configurable via `modelpilot.maxAutoFixRetries` (default: 3, set to 0 to disable).
+
 ## 0.4.0
 
 ### Added

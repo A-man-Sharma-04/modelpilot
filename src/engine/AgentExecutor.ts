@@ -433,7 +433,10 @@ export class AgentExecutor {
 					const tail = finalOutput.slice(-8000);
 					finalOutput = `${head}\n\n[NOTE: Command output truncated for length. Showing first 2000 and last 8000 characters out of ${finalOutput.length} total.]\n\n${tail}`;
 				}
-				const resultStr = finalOutput || (code === 0 ? '[Command executed successfully with no output. Exit code: 0]' : `[Command exited with code ${code} and no output]`);
+				const exitInfo = `\n[Exit code: ${code}]`;
+				const resultStr = finalOutput
+					? finalOutput + exitInfo
+					: (code === 0 ? '[Command executed successfully with no output. Exit code: 0]' : `[Command exited with code ${code} and no output]`);
 				resolve({ result: resultStr, newCwd });
 			});
 
