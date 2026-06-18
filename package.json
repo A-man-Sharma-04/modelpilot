@@ -5,7 +5,7 @@
   "author": "Aman Sharma Dev",
   "icon": "images/icon.png",
   "description": "Stop comparing AI models. ModelPilot recommends the most suitable available model for your task and routes your requests automatically.",
-  "version": "0.5.1",
+  "version": "0.5.3",
   "preview": false,
   "engines": {
     "vscode": "^1.90.0"
@@ -96,6 +96,10 @@
       {
         "command": "modelpilot.generateTests",
         "title": "ModelPilot: Generate Tests"
+      },
+      {
+        "command": "modelpilot.showAnalytics",
+        "title": "ModelPilot: View Token & Cost Analytics"
       }
     ],
     "configuration": {

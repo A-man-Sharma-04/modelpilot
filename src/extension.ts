@@ -24,6 +24,39 @@ import {
 } from './engine/chatHelpers';
 import { decompose, inferCategory, estimateTokens, estimateMessagesTokens } from './engine/TaskDecomposer';
 import { SYSTEM_PROMPT, MODE_PROMPTS, buildWorkspaceContext } from './participant/systemPrompt';
+import { AnalyticsManager } from './engine/AnalyticsManager';
+import { AnalyticsPanel } from './webview/AnalyticsPanel';
+import { ChatResult } from './providers/IProvider';
+
+async function recordUsage(
+	chatResult: ChatResult,
+	inputMessages: Message[],
+	globalState?: vscode.Memento
+) {
+	if (!globalState) {
+		return;
+	}
+	const provider = chatResult.provider || 'unknown';
+	const modelId = chatResult.modelId || 'unknown';
+	if (provider === 'unknown') {
+		return;
+	}
+
+	let promptTokens = 0;
+	let completionTokens = 0;
+
+	if (chatResult.usage) {
+		promptTokens = chatResult.usage.promptTokens;
+		completionTokens = chatResult.usage.completionTokens;
+	} else {
+		// Fallback estimation
+		promptTokens = estimateMessagesTokens(inputMessages);
+		completionTokens = estimateTokens(chatResult.content);
+	}
+
+	const am = new AnalyticsManager(globalState);
+	await am.recordRequest(provider, modelId, promptTokens, completionTokens);
+}
 
 let globalExpertProfile = DEFAULT_EXPERT_ID;
 
@@ -599,6 +632,14 @@ ${classificationContext}`;
 					}
 				);
 
+				if (classificationResult) {
+					const classificationMessages: Message[] = [
+						{ role: 'system', content: 'You are an intent classifier. Respond ONLY with the requested JSON.' },
+						{ role: 'user', content: classificationPrompt }
+					];
+					await recordUsage(classificationResult, classificationMessages, globalState);
+				}
+
 				const parsed = JSON.parse(classificationResult.content.trim());
 				if (parsed && typeof parsed === 'object') {
 					if (typeof parsed.isChitchat === 'boolean') {
@@ -906,6 +947,10 @@ ${classificationContext}`;
 				}
 			);
 
+			if (chatResult) {
+				await recordUsage(chatResult, apiMessages, globalState);
+			}
+
 			const assistantText = chatResult.content;
 			const toolCalls = chatResult.toolCalls && chatResult.toolCalls.length > 0
 				? chatResult.toolCalls
@@ -957,6 +1002,20 @@ ${classificationContext}`;
 						content: "Error: Missing required argument 'command' of type string."
 					});
 					continue;
+				}
+
+				if (toolName === 'run_terminal_command' && toolArgs.command && maxAutoFixRetries > 0) {
+					const cmdKey = toolArgs.command;
+					const currentRetries = autoFixRetryCounts.get(cmdKey) || 0;
+					if (currentRetries >= maxAutoFixRetries) {
+						apiMessages.push({
+							role: 'tool',
+							name: toolName,
+							tool_call_id: toolId,
+							content: `Error: Command "${cmdKey}" has already failed ${currentRetries} times. You are blocked from running it again until you modify the workspace files (using write_file, create_file, or delete_file) to fix the underlying issue. Inspect the files, fix the bugs, and then re-run.`
+						});
+						continue;
+					}
 				}
 				if (['read_file', 'write_file', 'create_file', 'delete_file', 'list_directory'].includes(toolName) && (typeof toolArgs.path !== 'string' || !toolArgs.path)) {
 					apiMessages.push({
@@ -1055,6 +1114,10 @@ ${classificationContext}`;
 							agentCwd = execResult.newCwd;
 						}
 
+						if (['write_file', 'create_file', 'delete_file'].includes(toolName)) {
+							autoFixRetryCounts.clear();
+						}
+
 						// Self-correction: detect failed terminal commands and inject a correction hint
 						if (toolName === 'run_terminal_command' && maxAutoFixRetries > 0) {
 							const exitCodeMatch = result.match(/\[Exit code: (\d+)\]/);
@@ -1114,6 +1177,24 @@ export function activate(context: vscode.ExtensionContext) {
 
 	const registry = new ModelRegistry();
 
+	const analyticsManager = new AnalyticsManager(context.globalState);
+	const statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
+	statusBarItem.command = 'modelpilot.showAnalytics';
+	
+	function updateStatusBar() {
+		const savings = analyticsManager.getSavingsString();
+		statusBarItem.text = `$(zap) ModelPilot: ${savings} Saved`;
+		statusBarItem.tooltip = 'ModelPilot: Total Cost Savings (Groq/NIM vs Paid APIs)';
+	}
+	updateStatusBar();
+	statusBarItem.show();
+
+	const analyticsSub = analyticsManager.onDidChange(() => {
+		updateStatusBar();
+	});
+
+	context.subscriptions.push(statusBarItem, analyticsSub);
+
 	globalExpertProfile = getConfig().defaultExpert;
 
 	let activeRefreshPromise: Promise<number> | undefined;
@@ -1158,6 +1239,10 @@ export function activate(context: vscode.ExtensionContext) {
 				query: '@modelpilot ',
 				isPartialQuery: true
 			});
+		}),
+
+		vscode.commands.registerCommand('modelpilot.showAnalytics', () => {
+			AnalyticsPanel.createOrShow(context.extensionUri, analyticsManager, sm);
 		}),
 
 		vscode.commands.registerCommand('modelpilot.addApiKey', async () => {

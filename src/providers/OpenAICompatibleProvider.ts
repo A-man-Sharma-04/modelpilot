@@ -129,8 +129,40 @@ export abstract class OpenAICompatibleProvider implements IProvider {
 	abstract readonly baseUrl: string;
 	abstract readonly apiKeys: string[];
 
-	private activeKeyIndex = 0;
-	private keyCooldowns = new Map<string, number>();
+	private static activeKeyIndices = new Map<string, number>();
+	private static providerKeyCooldowns = new Map<string, Map<string, number>>();
+
+	private get activeKeyIndex(): number {
+		return OpenAICompatibleProvider.activeKeyIndices.get(this.name) ?? 0;
+	}
+
+	private set activeKeyIndex(val: number) {
+		OpenAICompatibleProvider.activeKeyIndices.set(this.name, val);
+	}
+
+	private get keyCooldowns(): Map<string, number> {
+		let map = OpenAICompatibleProvider.providerKeyCooldowns.get(this.name);
+		if (!map) {
+			map = new Map<string, number>();
+			OpenAICompatibleProvider.providerKeyCooldowns.set(this.name, map);
+		}
+		return map;
+	}
+
+	public static getProviderCooldowns(providerName: string): { key: string; remainingMs: number }[] {
+		const cooldowns: { key: string; remainingMs: number }[] = [];
+		const map = OpenAICompatibleProvider.providerKeyCooldowns.get(providerName);
+		if (map) {
+			const now = Date.now();
+			for (const [key, end] of map.entries()) {
+				const remaining = end - now;
+				if (remaining > 0) {
+					cooldowns.push({ key, remainingMs: remaining });
+				}
+			}
+		}
+		return cooldowns;
+	}
 
 	isConfigured(): boolean {
 		return this.apiKeys.some(k => k.trim().length > 0);
@@ -194,6 +226,9 @@ export abstract class OpenAICompatibleProvider implements IProvider {
 				if (withTools) {
 					body.tools = tools;
 				}
+				if (options.stream) {
+					body.stream_options = { include_usage: true };
+				}
 
 				const attemptController = new AbortController();
 				let attemptTimedOut = false;
@@ -215,7 +250,7 @@ export abstract class OpenAICompatibleProvider implements IProvider {
 				}
 
 				try {
-					const response = await fetch(`${this.baseUrl}/chat/completions`, {
+					let response = await fetch(`${this.baseUrl}/chat/completions`, {
 						method: 'POST',
 						headers: this.getHeaders(activeKey),
 						body: JSON.stringify(body),
@@ -237,11 +272,15 @@ export abstract class OpenAICompatibleProvider implements IProvider {
 						throw err;
 					}
 
-					if (!response.ok) {
-						const errText = await response.text();
-						const err = new Error(`${this.name} API error ${response.status}: ${errText}`);
-						(err as any).status = response.status;
-						throw err;
+					if (response.status === 400 && options.stream && body.stream_options) {
+						console.warn(`Provider ${this.name} failed with stream_options. Retrying without stream_options...`);
+						delete body.stream_options;
+						response = await fetch(`${this.baseUrl}/chat/completions`, {
+							method: 'POST',
+							headers: this.getHeaders(activeKey),
+							body: JSON.stringify(body),
+							signal: attemptController.signal,
+						});
 					}
 
 					if (options.stream && options.onChunk) {
@@ -254,16 +293,29 @@ export abstract class OpenAICompatibleProvider implements IProvider {
 								content: string;
 								tool_calls?: ToolCall[];
 							}
-						}[]
+						}[];
+						usage?: {
+							prompt_tokens?: number;
+							completion_tokens?: number;
+							total_tokens?: number;
+						};
 					};
 					const msg = data.choices?.[0]?.message;
 					if (!msg || (!msg.content && (!msg.tool_calls || msg.tool_calls.length === 0))) {
 						throw new Error('Empty response received from model.');
 					}
-					return {
+					const chatResult: ChatResult = {
 						content: msg.content ?? '',
 						toolCalls: msg.tool_calls,
 					};
+					if (data.usage) {
+						chatResult.usage = {
+							promptTokens: data.usage.prompt_tokens ?? 0,
+							completionTokens: data.usage.completion_tokens ?? 0,
+							totalTokens: data.usage.total_tokens ?? 0,
+						};
+					}
+					return chatResult;
 				} catch (err: any) {
 					clearTimeout(attemptTimeout);
 					if (options.abortSignal) {
@@ -423,6 +475,7 @@ export abstract class OpenAICompatibleProvider implements IProvider {
 		}
 
 		let buffer = '';
+		let usage: ChatResult['usage'] = undefined;
 		const processLine = (line: string) => {
 			const trimmed = line.trim();
 			if (!trimmed) { return; }
@@ -436,7 +489,7 @@ export abstract class OpenAICompatibleProvider implements IProvider {
 					throw new Error(parsed.error.message || JSON.stringify(parsed.error));
 				}
 				const chunk = parsed as {
-					choices: {
+					choices?: {
 						delta: {
 							content?: string;
 							tool_calls?: {
@@ -449,8 +502,20 @@ export abstract class OpenAICompatibleProvider implements IProvider {
 								};
 							}[];
 						}
-					}[]
+					}[];
+					usage?: {
+						prompt_tokens?: number;
+						completion_tokens?: number;
+						total_tokens?: number;
+					};
 				};
+				if (chunk.usage) {
+					usage = {
+						promptTokens: chunk.usage.prompt_tokens ?? 0,
+						completionTokens: chunk.usage.completion_tokens ?? 0,
+						totalTokens: chunk.usage.total_tokens ?? 0,
+					};
+				}
 				const delta = chunk.choices?.[0]?.delta;
 				if (delta) {
 					const text = delta.content ?? '';
@@ -525,6 +590,7 @@ export abstract class OpenAICompatibleProvider implements IProvider {
 		return {
 			content: fullText,
 			toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
+			usage,
 		};
 	}
 }

@@ -51,7 +51,7 @@ export class Router {
 		// Sort candidate recommendations: healthy and active (no cooldown) first, then shortest cooldown, then unhealthy
 		const getCooldown = (providerName: string): number => {
 			const p = this.getProvider(providerName);
-			return (p && typeof p.getCooldownRemainingMs === 'function') ? p.getCooldownRemainingMs() : 0;
+			return p ? p.getCooldownRemainingMs() : 0;
 		};
 
 		candidateRecs.sort((a, b) => {
@@ -91,11 +91,18 @@ export class Router {
 				);
 				const response = await provider.chat(rec.model.id, fittedMessages, tools, undefined, options);
 				healthMonitor.recordSuccess(rec.model.provider, Date.now() - startTime);
+				response.provider = rec.model.provider;
+				response.modelId = rec.model.id;
 				return response;
 			} catch (err) {
 				healthMonitor.recordFailure(rec.model.provider);
 				const reason = err instanceof Error ? err.message : String(err);
 				errors.push(`${rec.model.displayName}: ${reason}`);
+
+				const next = candidateRecs[i + 1];
+				if (next && onFallback) {
+					onFallback(rec.model.displayName, next.model.displayName, reason);
+				}
 
 				// Rate limit hit on NIM -> immediately fall back to Groq / not another NIM model
 				if (rec.model.provider === 'nvidia') {
@@ -108,11 +115,6 @@ export class Router {
 						errors.push(`Skipped ${skippedCount} subsequent NVIDIA NIM models on provider failure.`);
 						i = nextIndex - 1;
 					}
-				}
-
-				const next = candidateRecs[i + 1];
-				if (next && onFallback) {
-					onFallback(rec.model.displayName, next.model.displayName, reason);
 				}
 			}
 		}

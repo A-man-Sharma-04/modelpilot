@@ -46,6 +46,13 @@ export interface Tool {
 export interface ChatResult {
 	content: string;
 	toolCalls?: ToolCall[];
+	usage?: {
+		promptTokens: number;
+		completionTokens: number;
+		totalTokens: number;
+	};
+	provider?: string;
+	modelId?: string;
 }
 
 export interface IProvider {
@@ -59,5 +66,5 @@ export interface IProvider {
 		context?: any,
 		options?: ChatOptions,
 	): Promise<ChatResult>;
-	getCooldownRemainingMs?(): number;
+	getCooldownRemainingMs(): number;
 }

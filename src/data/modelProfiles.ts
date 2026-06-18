@@ -27,6 +27,8 @@ export interface ModelProfile {
 	supportsNativeTools?: boolean;
 	maxOutputTokens?: number;
 	safeInputTokens?: number;
+	inputPricePerM?: number;    // Price per million input tokens in USD (commercial paid rate)
+	outputPricePerM?: number;   // Price per million output tokens in USD (commercial paid rate)
 }
 
 export const MODEL_PROFILES: ModelProfile[] = [
@@ -44,6 +46,8 @@ export const MODEL_PROFILES: ModelProfile[] = [
 		lastVerified: '2026-06-09',
 		maxOutputTokens: 4096,
 		safeInputTokens: 8000,
+		inputPricePerM: 0.55,
+		outputPricePerM: 2.19,
 	},
 	{
 		id: 'deepseek-ai/deepseek-v4-flash',
@@ -56,6 +60,8 @@ export const MODEL_PROFILES: ModelProfile[] = [
 		lastVerified: '2026-06-09',
 		maxOutputTokens: 4096,
 		safeInputTokens: 8000,
+		inputPricePerM: 0.10,
+		outputPricePerM: 0.20,
 	},
 	{
 		id: 'meta/codellama-70b',
@@ -65,6 +71,8 @@ export const MODEL_PROFILES: ModelProfile[] = [
 		capabilities: { coding: 8, reasoning: 5, writing: 4, learning: 6, security: 4, speed: 5 },
 		description: "Meta's proven code model — reliable across languages.",
 		lastVerified: '2026-06-09',
+		inputPricePerM: 0.70,
+		outputPricePerM: 0.90,
 	},
 	{
 		id: 'google/gemma-3n-e2b-it',
@@ -75,6 +83,8 @@ export const MODEL_PROFILES: ModelProfile[] = [
 		description: 'Tiny 2B model — ultra-fast, great for quick questions.',
 		humanLabel: 'Best for Quick Questions',
 		lastVerified: '2026-06-09',
+		inputPricePerM: 0.05,
+		outputPricePerM: 0.05,
 	},
 	{
 		id: 'google/gemma-3n-e4b-it',
@@ -84,6 +94,8 @@ export const MODEL_PROFILES: ModelProfile[] = [
 		capabilities: { coding: 5, reasoning: 4, writing: 5, learning: 9, security: 3, speed: 10 },
 		description: 'Fast 4B model — ideal for learning and quick explanations.',
 		lastVerified: '2026-06-09',
+		inputPricePerM: 0.07,
+		outputPricePerM: 0.07,
 	},
 	{
 		id: 'google/gemma-2-2b-it',
@@ -95,6 +107,8 @@ export const MODEL_PROFILES: ModelProfile[] = [
 		lastVerified: '2026-06-09',
 		maxOutputTokens: 512,
 		safeInputTokens: 1500,
+		inputPricePerM: 0.05,
+		outputPricePerM: 0.05,
 	},
 	{
 		id: 'meta/llama-3.2-1b-instruct',
@@ -106,6 +120,8 @@ export const MODEL_PROFILES: ModelProfile[] = [
 		lastVerified: '2026-06-09',
 		maxOutputTokens: 512,
 		safeInputTokens: 2000,
+		inputPricePerM: 0.05,
+		outputPricePerM: 0.05,
 	},
 	{
 		id: 'microsoft/phi-4-mini-instruct',
@@ -115,6 +131,8 @@ export const MODEL_PROFILES: ModelProfile[] = [
 		capabilities: { coding: 7, reasoning: 6, writing: 5, learning: 8, security: 4, speed: 9 },
 		description: 'Microsoft Phi 4 Mini — efficient and surprisingly capable.',
 		lastVerified: '2026-06-09',
+		inputPricePerM: 0.07,
+		outputPricePerM: 0.07,
 	},
 	{
 		id: 'google/gemma-3-4b-it',
@@ -124,6 +142,8 @@ export const MODEL_PROFILES: ModelProfile[] = [
 		capabilities: { coding: 5, reasoning: 4, writing: 5, learning: 9, security: 3, speed: 9 },
 		description: 'Small Gemma 3 — good for learning at speed.',
 		lastVerified: '2026-06-09',
+		inputPricePerM: 0.07,
+		outputPricePerM: 0.07,
 	},
 	{
 		id: 'google/gemma-3-12b-it',
@@ -133,6 +153,8 @@ export const MODEL_PROFILES: ModelProfile[] = [
 		capabilities: { coding: 6, reasoning: 5, writing: 7, learning: 8, security: 4, speed: 8 },
 		description: 'Mid-size Gemma 3 — balanced speed and quality.',
 		lastVerified: '2026-06-09',
+		inputPricePerM: 0.15,
+		outputPricePerM: 0.15,
 	},
 	{
 		id: 'meta/llama-3.2-3b-instruct',
@@ -142,6 +164,8 @@ export const MODEL_PROFILES: ModelProfile[] = [
 		capabilities: { coding: 4, reasoning: 4, writing: 5, learning: 8, security: 3, speed: 9 },
 		description: 'Compact Llama with large context — quick learning tasks.',
 		lastVerified: '2026-06-09',
+		inputPricePerM: 0.15,
+		outputPricePerM: 0.15,
 	},
 	{
 		id: 'meta/llama-3.3-70b-instruct',
@@ -152,6 +176,8 @@ export const MODEL_PROFILES: ModelProfile[] = [
 		description: 'Meta Llama 3.3 70B — reliable all-rounder.',
 		lastVerified: '2026-06-09',
 		supportsNativeTools: true,
+		inputPricePerM: 0.70,
+		outputPricePerM: 0.90,
 	},
 	{
 		id: 'qwen/qwen3-coder-480b-a35b-instruct',
@@ -161,6 +187,8 @@ export const MODEL_PROFILES: ModelProfile[] = [
 		capabilities: { coding: 10, reasoning: 8, writing: 7, learning: 6, security: 8, speed: 2 },
 		description: 'Extremely powerful Qwen 3 Coder 480B NIM model optimized for coding.',
 		lastVerified: '2026-06-19',
+		inputPricePerM: 3.00,
+		outputPricePerM: 9.00,
 	},
 	{
 		id: 'nvidia/nemotron-3-ultra-550b-a55b',
@@ -170,6 +198,8 @@ export const MODEL_PROFILES: ModelProfile[] = [
 		capabilities: { coding: 8, reasoning: 10, writing: 7, learning: 7, security: 8, speed: 1 },
 		description: 'NVIDIA Nemotron 3 Ultra 550B reasoning model.',
 		lastVerified: '2026-06-19',
+		inputPricePerM: 4.00,
+		outputPricePerM: 12.00,
 	},
 	{
 		id: 'nvidia/llama-3.1-nemotron-ultra-253b-v1',
@@ -179,6 +209,8 @@ export const MODEL_PROFILES: ModelProfile[] = [
 		capabilities: { coding: 8, reasoning: 9, writing: 7, learning: 7, security: 7, speed: 2 },
 		description: 'NVIDIA Llama 3.1 Nemotron Ultra 253B NIM model.',
 		lastVerified: '2026-06-19',
+		inputPricePerM: 4.00,
+		outputPricePerM: 12.00,
 	},
 	{
 		id: 'mistralai/mistral-large-3-675b-instruct-2512',
@@ -188,6 +220,8 @@ export const MODEL_PROFILES: ModelProfile[] = [
 		capabilities: { coding: 7, reasoning: 8, writing: 10, learning: 7, security: 6, speed: 2 },
 		description: 'Mistral Large 3 675B NIM model for writing and translation.',
 		lastVerified: '2026-06-19',
+		inputPricePerM: 4.00,
+		outputPricePerM: 12.00,
 	},
 	{
 		id: 'nvidia/llama-3.3-nemotron-super-49b-v1',
@@ -197,6 +231,8 @@ export const MODEL_PROFILES: ModelProfile[] = [
 		capabilities: { coding: 7, reasoning: 8, writing: 6, learning: 7, security: 6, speed: 6 },
 		description: 'NVIDIA Llama 3.3 Nemotron Super 49B NIM model.',
 		lastVerified: '2026-06-19',
+		inputPricePerM: 0.50,
+		outputPricePerM: 0.80,
 	},
 
 	// ─── OPENROUTER ───────────────────────────────────────────────────────────
@@ -210,6 +246,8 @@ export const MODEL_PROFILES: ModelProfile[] = [
 		description: 'Qwen 3 Coder via OpenRouter free tier — highly optimized for coding and technical questions.',
 		humanLabel: 'Best for Coding',
 		lastVerified: '2026-06-11',
+		inputPricePerM: 0.30,
+		outputPricePerM: 0.40,
 	},
 	{
 		id: 'meta-llama/llama-3.3-70b-instruct:free',
@@ -219,6 +257,8 @@ export const MODEL_PROFILES: ModelProfile[] = [
 		capabilities: { coding: 7, reasoning: 7, writing: 8, learning: 7, security: 6, speed: 6 },
 		description: 'Llama 3.3 70B via OpenRouter free tier — general purpose.',
 		lastVerified: '2026-06-11',
+		inputPricePerM: 0.70,
+		outputPricePerM: 0.90,
 	},
 	{
 		id: 'google/gemma-4-31b-it:free',
@@ -228,6 +268,8 @@ export const MODEL_PROFILES: ModelProfile[] = [
 		capabilities: { coding: 8, reasoning: 8, writing: 8, learning: 8, security: 6, speed: 6 },
 		description: 'Gemma 4 31B via OpenRouter free tier — balanced power and speed.',
 		lastVerified: '2026-06-11',
+		inputPricePerM: 0.35,
+		outputPricePerM: 0.35,
 	},
 	{
 		id: 'openai/gpt-oss-120b:free',
@@ -237,6 +279,8 @@ export const MODEL_PROFILES: ModelProfile[] = [
 		capabilities: { coding: 8, reasoning: 8, writing: 8, learning: 8, security: 7, speed: 5 },
 		description: 'GPT-OSS-120B via OpenRouter free tier — large-scale open-source model.',
 		lastVerified: '2026-06-11',
+		inputPricePerM: 1.00,
+		outputPricePerM: 2.00,
 	},
 	{
 		id: 'meta-llama/llama-3.2-3b-instruct:free',
@@ -246,6 +290,8 @@ export const MODEL_PROFILES: ModelProfile[] = [
 		capabilities: { coding: 4, reasoning: 4, writing: 5, learning: 8, security: 3, speed: 9 },
 		description: 'Llama 3.2 3B via OpenRouter free tier — fast response, great for learning.',
 		lastVerified: '2026-06-11',
+		inputPricePerM: 0.15,
+		outputPricePerM: 0.15,
 	},
 
 	// ─── GROQ ─────────────────────────────────────────────────────────────────
@@ -261,6 +307,8 @@ export const MODEL_PROFILES: ModelProfile[] = [
 		lastVerified: '2026-06-09',
 		maxOutputTokens: 2048,
 		safeInputTokens: 5000,
+		inputPricePerM: 0.70,
+		outputPricePerM: 0.90,
 	},
 	{
 		id: 'deepseek-r1-distill-llama-70b',
@@ -272,6 +320,8 @@ export const MODEL_PROFILES: ModelProfile[] = [
 		lastVerified: '2026-06-09',
 		maxOutputTokens: 2048,
 		safeInputTokens: 5000,
+		inputPricePerM: 0.70,
+		outputPricePerM: 0.90,
 	},
 	{
 		id: 'mixtral-8x7b-32768',
@@ -283,6 +333,8 @@ export const MODEL_PROFILES: ModelProfile[] = [
 		lastVerified: '2026-06-09',
 		maxOutputTokens: 2048,
 		safeInputTokens: 4000,
+		inputPricePerM: 0.24,
+		outputPricePerM: 0.24,
 	},
 	{
 		id: 'gemma2-9b-it',
@@ -294,6 +346,8 @@ export const MODEL_PROFILES: ModelProfile[] = [
 		lastVerified: '2026-06-09',
 		maxOutputTokens: 1024,
 		safeInputTokens: 3000,
+		inputPricePerM: 0.06,
+		outputPricePerM: 0.06,
 	},
 ];
 
