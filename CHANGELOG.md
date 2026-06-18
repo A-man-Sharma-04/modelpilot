@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.5.1
+
+### Added
+- **Wait-Time Aware Routing & Key-String Mapping**: Dynamically reorder and bypass providers in rate limit cooldown, preferring available alternative providers instantly. Tracks key cooldown state mapped directly to API key strings. Parses precise wait times from headers (retry-after, reset) and error message texts.
+
 ## 0.5.0
 
 ### Added

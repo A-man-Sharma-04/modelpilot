@@ -59,4 +59,5 @@ export interface IProvider {
 		context?: any,
 		options?: ChatOptions,
 	): Promise<ChatResult>;
+	getCooldownRemainingMs?(): number;
 }

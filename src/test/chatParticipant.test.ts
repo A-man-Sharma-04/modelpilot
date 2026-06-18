@@ -8,7 +8,7 @@ import { ModelRegistry } from '../registry/ModelRegistry';
 import { Router } from '../engine/Router';
 import { SecretsManager } from '../secrets';
 import { healthMonitor } from '../engine/HealthMonitor';
-import { getWorkspaceRoot } from '../engine/AgentExecutor';
+import { getWorkspaceRoot, AgentExecutor } from '../engine/AgentExecutor';
 import { OpenAICompatibleProvider } from '../providers/OpenAICompatibleProvider';
 
 suite('ModelPilot Chat Participant Integration Tests', () => {
@@ -2253,5 +2253,141 @@ suite('ModelPilot Chat Participant Integration Tests', () => {
 		} finally {
 			global.fetch = originalFetch;
 		}
+	});
+
+	test('should parse retry-after from headers and text body formats correctly', () => {
+		const { parseRetryAfter } = require('../providers/OpenAICompatibleProvider');
+
+		// 1. retry-after header as integer
+		const headers1 = new Map<string, string>([['retry-after', '15']]);
+		assert.strictEqual(parseRetryAfter('', headers1), 15);
+
+		// 2. retry-after header as HTTP-date
+		const futureDate = new Date(Date.now() + 25000).toUTCString();
+		const headers2 = new Map<string, string>([['retry-after', futureDate]]);
+		const parsed2 = parseRetryAfter('', headers2);
+		assert.ok(parsed2 >= 24 && parsed2 <= 26, `Should parse HTTP-date as ~25s (got ${parsed2})`);
+
+		// 3. x-ratelimit-reset header
+		const headers3 = new Map<string, string>([['x-ratelimit-reset', '12.34']]);
+		assert.strictEqual(parseRetryAfter('', headers3), 13);
+
+		// 4. x-ratelimit-reset-requests header
+		const headers4 = new Map<string, string>([['x-ratelimit-reset-requests', '2m15s']]);
+		assert.strictEqual(parseRetryAfter('', headers4), 135);
+
+		// 5. JSON body
+		const errJson = JSON.stringify({ error: { retry_after_seconds: 5.5 } });
+		assert.strictEqual(parseRetryAfter(errJson), 6);
+
+		// 6. Text message: please try again in X.Xs
+		assert.strictEqual(parseRetryAfter('please try again in 5.3s'), 6);
+
+		// 7. Text message: retry in XmXs
+		assert.strictEqual(parseRetryAfter('Rate limit reached. retry in 1m15s'), 75);
+
+		// 8. Default fallback
+		assert.strictEqual(parseRetryAfter('unknown error'), 10);
+	});
+
+	test('should sort candidate recommendations so that providers in cooldown are tried last', async () => {
+		const originalRouteMethod = Router.prototype.route;
+		Router.prototype.route = originalRoute;
+
+		try {
+			const { healthMonitor } = require('../engine/HealthMonitor');
+			healthMonitor.clear();
+
+			// Create two mock providers
+			class MockProviderA extends OpenAICompatibleProvider {
+				readonly name = 'provider-a';
+				readonly baseUrl = 'https://a.com';
+				constructor(readonly apiKeys: string[]) {
+					super();
+				}
+				async listModels() { return []; }
+			}
+
+			class MockProviderB extends OpenAICompatibleProvider {
+				readonly name = 'provider-b';
+				readonly baseUrl = 'https://b.com';
+				constructor(readonly apiKeys: string[]) {
+					super();
+				}
+				async listModels() { return []; }
+			}
+
+			const providerA = new MockProviderA(['key-a']);
+			const providerB = new MockProviderB(['key-b']);
+
+			// Put providerA in cooldown by setting cooldown on its key
+			// @ts-ignore
+			providerA.keyCooldowns.set('key-a', Date.now() + 10000); // 10s cooldown
+
+			// Mock their chat functions
+			let providerAChatCalled = false;
+			let providerBChatCalled = false;
+
+			providerA.chat = async () => {
+				providerAChatCalled = true;
+				return { content: 'response A' };
+			};
+
+			providerB.chat = async () => {
+				providerBChatCalled = true;
+				return { content: 'response B' };
+			};
+
+			const router = new Router([providerA, providerB]);
+
+			const recommendations = [
+				{
+					model: {
+						id: 'model-a',
+						displayName: 'Model A',
+						provider: 'provider-a',
+						contextLength: 4096,
+					}
+				},
+				{
+					model: {
+						id: 'model-b',
+						displayName: 'Model B',
+						provider: 'provider-b',
+						contextLength: 4096,
+					}
+				}
+			] as any;
+
+			// Route query
+			const result = await router.route(recommendations, [{ role: 'user', content: 'hello' }]);
+
+			// Since providerA is in cooldown, the router should have reordered candidateRecs
+			// and called providerB first.
+			assert.strictEqual(result.content, 'response B');
+			assert.strictEqual(providerBChatCalled, true);
+			assert.strictEqual(providerAChatCalled, false);
+		} finally {
+			Router.prototype.route = originalRouteMethod;
+		}
+	});
+
+	test('should block superuser / privilege elevation commands in AgentExecutor', async () => {
+		const resultSudo = await AgentExecutor.execute('run_terminal_command', { command: 'sudo apt-get update' }, '.');
+		assert.ok(resultSudo.result.includes('superuser privileges'), 'Should block sudo command');
+
+		const resultSu = await AgentExecutor.execute('run_terminal_command', { command: 'su -' }, '.');
+		assert.ok(resultSu.result.includes('superuser privileges'), 'Should block su command');
+
+		const resultPkexec = await AgentExecutor.execute('run_terminal_command', { command: 'pkexec systemctl restart' }, '.');
+		assert.ok(resultPkexec.result.includes('superuser privileges'), 'Should block pkexec command');
+
+		const resultRunas = await AgentExecutor.execute('run_terminal_command', { command: 'runas /user:administrator cmd' }, '.');
+		assert.ok(resultRunas.result.includes('superuser privileges'), 'Should block runas command');
+
+		// Normal command should NOT be blocked (it should run normally, e.g., print hello)
+		const resultNormal = await AgentExecutor.execute('run_terminal_command', { command: 'echo hello_world_test' }, '.');
+		assert.ok(!resultNormal.result.includes('superuser privileges'), 'Should not block normal command');
+		assert.ok(resultNormal.result.includes('hello_world_test'), 'Should execute normal command and return output');
 	});
 });

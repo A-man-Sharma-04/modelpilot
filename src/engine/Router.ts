@@ -27,10 +27,7 @@ export class Router {
 			throw new Error('No models available. Please configure your API keys first.');
 		}
 
-		// Order candidate recommendations: healthy providers first, then unhealthy providers as fallback
-		const healthyRecs = configuredRecs.filter(rec => healthMonitor.isHealthy(rec.model.provider));
-		const unhealthyRecs = configuredRecs.filter(rec => !healthMonitor.isHealthy(rec.model.provider));
-		let candidateRecs = [...healthyRecs, ...unhealthyRecs];
+		let candidateRecs = [...configuredRecs];
 
 		const systemTokens = estimateMessagesTokens(
 			messages.filter(m => m.role === 'system')
@@ -50,6 +47,28 @@ export class Router {
 		if (filteredRecs.length > 0) {
 			candidateRecs = filteredRecs;
 		}
+
+		// Sort candidate recommendations: healthy and active (no cooldown) first, then shortest cooldown, then unhealthy
+		const getCooldown = (providerName: string): number => {
+			const p = this.getProvider(providerName);
+			return (p && typeof p.getCooldownRemainingMs === 'function') ? p.getCooldownRemainingMs() : 0;
+		};
+
+		candidateRecs.sort((a, b) => {
+			const aHealthy = healthMonitor.isHealthy(a.model.provider);
+			const bHealthy = healthMonitor.isHealthy(b.model.provider);
+			if (aHealthy !== bHealthy) {
+				return aHealthy ? -1 : 1;
+			}
+
+			const aCooldown = getCooldown(a.model.provider);
+			const bCooldown = getCooldown(b.model.provider);
+			if (aCooldown !== bCooldown) {
+				return aCooldown - bCooldown;
+			}
+
+			return 0;
+		});
 
 		const errors: string[] = [];
 

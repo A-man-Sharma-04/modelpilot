@@ -29,13 +29,108 @@ function formatMessagesForNonNativeTools(messages: Message[]): Message[] {
 	});
 }
 
+function parseDuration(val: string): number | undefined {
+	val = val.trim().toLowerCase();
+	// Check compound formats first (e.g. 2m15s, 1h30m)
+	const match = val.match(/^(?:(\d+)h)?(?:(\d+)m)?(?:(\d+(?:\.\d+)?)s)?(?:(\d+)ms)?$/);
+	if (match && (match[1] || match[2] || match[3] || match[4])) {
+		let totalSec = 0;
+		if (match[1]) {
+			totalSec += parseInt(match[1], 10) * 3600;
+		}
+		if (match[2]) {
+			totalSec += parseInt(match[2], 10) * 60;
+		}
+		if (match[3]) {
+			totalSec += parseFloat(match[3]);
+		}
+		if (match[4]) {
+			totalSec += parseFloat(match[4]) / 1000;
+		}
+		return Math.ceil(totalSec);
+	}
+	// Fall back to simple float/integer
+	const raw = parseFloat(val);
+	return !isNaN(raw) ? Math.ceil(raw) : undefined;
+}
+
+export function parseRetryAfter(errText: string, headers?: { get(name: string): string | null }): number {
+	if (headers) {
+		const retryAfterHeader = headers.get('retry-after');
+		if (retryAfterHeader) {
+			const seconds = parseInt(retryAfterHeader, 10);
+			if (!isNaN(seconds) && seconds > 0) {
+				return seconds;
+			}
+			const date = Date.parse(retryAfterHeader);
+			if (!isNaN(date)) {
+				const diffSec = Math.ceil((date - Date.now()) / 1000);
+				if (diffSec > 0) {
+					return diffSec;
+				}
+			}
+		}
+
+		const xResetSec = headers.get('x-ratelimit-reset');
+		if (xResetSec) {
+			const seconds = parseFloat(xResetSec);
+			if (!isNaN(seconds) && seconds > 0) {
+				return Math.ceil(seconds);
+			}
+		}
+
+		const xResetReqs = headers.get('x-ratelimit-reset-requests');
+		if (xResetReqs) {
+			const parsed = parseDuration(xResetReqs);
+			if (parsed !== undefined && parsed > 0) {
+				return parsed;
+			}
+		}
+
+		const xResetTokens = headers.get('x-ratelimit-reset-tokens');
+		if (xResetTokens) {
+			const parsed = parseDuration(xResetTokens);
+			if (parsed !== undefined && parsed > 0) {
+				return parsed;
+			}
+		}
+	}
+
+	try {
+		const parsed = JSON.parse(errText);
+		const val = parsed.error?.retry_after_seconds ?? parsed.retry_after_seconds;
+		if (val !== undefined) {
+			const parsedVal = parseFloat(val);
+			if (!isNaN(parsedVal) && parsedVal > 0) {
+				return Math.ceil(parsedVal);
+			}
+		}
+	} catch {}
+
+	const match = errText.match(/(?:try again in|retry in|wait|after)[\s:]*([0-9\.]+(?:\s*(?:ms|s|m|h|seconds|minutes|hours|milliseconds))?(?:\s*\d+(?:\s*(?:ms|s|m|h|seconds|minutes|hours|milliseconds))?)?)/i);
+	if (match) {
+		const normalized = match[1].toLowerCase()
+			.replace(/milliseconds?/g, 'ms')
+			.replace(/seconds?/g, 's')
+			.replace(/minutes?/g, 'm')
+			.replace(/hours?/g, 'h')
+			.replace(/\s+/g, '');
+		const parsed = parseDuration(normalized);
+		if (parsed !== undefined && parsed > 0) {
+			return parsed;
+		}
+	}
+
+	return 10;
+}
+
 export abstract class OpenAICompatibleProvider implements IProvider {
 	abstract readonly name: string;
 	abstract readonly baseUrl: string;
 	abstract readonly apiKeys: string[];
 
 	private activeKeyIndex = 0;
-	private keyCooldowns = new Map<number, number>();
+	private keyCooldowns = new Map<string, number>();
 
 	isConfigured(): boolean {
 		return this.apiKeys.some(k => k.trim().length > 0);
@@ -48,6 +143,28 @@ export abstract class OpenAICompatibleProvider implements IProvider {
 			'Authorization': `Bearer ${key}`,
 			'Content-Type': 'application/json',
 		};
+	}
+
+	getCooldownRemainingMs(): number {
+		const activeKeys = this.apiKeys.filter(k => k.trim().length > 0);
+		if (activeKeys.length === 0) {
+			return 0;
+		}
+		const now = Date.now();
+		let minRemaining = Infinity;
+		let hasAvailableKey = false;
+		for (const key of activeKeys) {
+			const cooldownEnd = this.keyCooldowns.get(key) ?? 0;
+			const remaining = cooldownEnd - now;
+			if (remaining <= 0) {
+				hasAvailableKey = true;
+				break;
+			}
+			if (remaining < minRemaining) {
+				minRemaining = remaining;
+			}
+		}
+		return hasAvailableKey ? 0 : minRemaining;
 	}
 
 	async chat(
@@ -112,23 +229,7 @@ export abstract class OpenAICompatibleProvider implements IProvider {
 
 					if (response.status === 429) {
 						const errText = await response.text();
-						let retryAfter = 10;
-						try {
-							const parsed = JSON.parse(errText);
-							if (parsed.error && parsed.error.retry_after_seconds) {
-								retryAfter = Math.ceil(parseFloat(parsed.error.retry_after_seconds));
-							} else if (parsed.retry_after_seconds) {
-								retryAfter = Math.ceil(parseFloat(parsed.retry_after_seconds));
-							}
-						} catch {}
-						
-						const retryHeader = response.headers?.get('retry-after');
-						if (retryHeader) {
-							const parsedHeader = parseInt(retryHeader, 10);
-							if (!isNaN(parsedHeader) && parsedHeader > 0) {
-								retryAfter = parsedHeader;
-							}
-						}
+						const retryAfter = parseRetryAfter(errText, response.headers);
 
 						const err = new Error(`Rate limit exceeded (429): ${errText}`);
 						(err as any).status = 429;
@@ -201,8 +302,9 @@ export abstract class OpenAICompatibleProvider implements IProvider {
 			if (triedKeyIndices.has(keyIndex)) {
 				break;
 			}
-			
-			const cooldownEnd = this.keyCooldowns.get(keyIndex) ?? 0;
+
+			const activeKey = activeKeys[keyIndex];
+			const cooldownEnd = this.keyCooldowns.get(activeKey) ?? 0;
 			if (cooldownEnd > Date.now()) {
 				continue;
 			}
@@ -212,7 +314,7 @@ export abstract class OpenAICompatibleProvider implements IProvider {
 			try {
 				const result = await executeWithKey(keyIndex);
 				this.activeKeyIndex = keyIndex;
-				this.keyCooldowns.delete(keyIndex);
+				this.keyCooldowns.delete(activeKey);
 				return result;
 			} catch (err: any) {
 				console.warn(`Key index ${keyIndex} for provider ${this.name} failed (${err.message || err}). Rotating to next key...`);
@@ -222,13 +324,10 @@ export abstract class OpenAICompatibleProvider implements IProvider {
 					cooldownMs = 3600 * 1000;
 				} else if (err.status === 429) {
 					cooldownMs = (err.retryAfter ?? 10) * 1000;
-				} else if (err.message && err.message.includes('429')) {
-					const retryMatch = err.message.match(/retry_after_seconds[\":,\s]*(\d+\.?\d*)/i);
-					if (retryMatch) {
-						cooldownMs = Math.ceil(parseFloat(retryMatch[1])) * 1000;
-					}
+				} else if (err.message && (err.message.includes('429') || err.message.toLowerCase().includes('rate limit'))) {
+					cooldownMs = parseRetryAfter(err.message) * 1000;
 				}
-				this.keyCooldowns.set(keyIndex, Date.now() + cooldownMs);
+				this.keyCooldowns.set(activeKey, Date.now() + cooldownMs);
 				
 				this.activeKeyIndex = (keyIndex + 1) % activeKeys.length;
 				lastError = err;
@@ -245,7 +344,8 @@ export abstract class OpenAICompatibleProvider implements IProvider {
 		let bestKeyIndex = -1;
 
 		for (let i = 0; i < activeKeys.length; i++) {
-			const cooldownEnd = this.keyCooldowns.get(i) ?? 0;
+			const key = activeKeys[i];
+			const cooldownEnd = this.keyCooldowns.get(key) ?? 0;
 			const delay = cooldownEnd - now;
 			if (delay > 0 && delay < minDelayMs) {
 				minDelayMs = delay;
@@ -255,6 +355,7 @@ export abstract class OpenAICompatibleProvider implements IProvider {
 
 		if (bestKeyIndex !== -1 && minDelayMs <= 30000) {
 			console.warn(`All API keys for provider ${this.name} are rate-limited/in cooldown. Waiting ${Math.ceil(minDelayMs / 1000)}s for the shortest cooldown...`);
+			const bestKey = activeKeys[bestKeyIndex];
 			
 			try {
 				await new Promise<void>((resolve, reject) => {
@@ -278,7 +379,7 @@ export abstract class OpenAICompatibleProvider implements IProvider {
 
 				const result = await executeWithKey(bestKeyIndex);
 				this.activeKeyIndex = bestKeyIndex;
-				this.keyCooldowns.delete(bestKeyIndex);
+				this.keyCooldowns.delete(bestKey);
 				return result;
 			} catch (err: any) {
 				let cooldownMs = 10000;
@@ -286,13 +387,10 @@ export abstract class OpenAICompatibleProvider implements IProvider {
 					cooldownMs = 3600 * 1000;
 				} else if (err.status === 429) {
 					cooldownMs = (err.retryAfter ?? 10) * 1000;
-				} else if (err.message && err.message.includes('429')) {
-					const retryMatch = err.message.match(/retry_after_seconds[\":,\s]*(\d+\.?\d*)/i);
-					if (retryMatch) {
-						cooldownMs = Math.ceil(parseFloat(retryMatch[1])) * 1000;
-					}
+				} else if (err.message && (err.message.includes('429') || err.message.toLowerCase().includes('rate limit'))) {
+					cooldownMs = parseRetryAfter(err.message) * 1000;
 				}
-				this.keyCooldowns.set(bestKeyIndex, Date.now() + cooldownMs);
+				this.keyCooldowns.set(bestKey, Date.now() + cooldownMs);
 				
 				this.activeKeyIndex = (bestKeyIndex + 1) % activeKeys.length;
 				lastError = err;

@@ -326,6 +326,19 @@ export class AgentExecutor {
 	}
 
 	private static async runTerminalCommand(command: string, agentCwd: string, abortSignal?: AbortSignal): Promise<{ result: string; newCwd?: string }> {
+		const trimmedCommand = command.trim();
+		const blockedPatterns = [
+			/^(?:.*\s+)?sudo(?:\s+|$)/i,
+			/^(?:.*\s+)?su(?:\s+|$)/i,
+			/^(?:.*\s+)?pkexec(?:\s+|$)/i,
+			/^(?:.*\s+)?doas(?:\s+|$)/i,
+			/^(?:.*\s+)?gksudo(?:\s+|$)/i,
+			/^(?:.*\s+)?runas(?:\s+|$)/i
+		];
+		if (blockedPatterns.some(pattern => pattern.test(trimmedCommand))) {
+			return { result: 'Error: Running commands with superuser privileges (e.g., sudo, su, pkexec, doas, gksudo, runas) is not supported.' };
+		}
+
 		let root: string;
 		try {
 			root = getWorkspaceRoot();
