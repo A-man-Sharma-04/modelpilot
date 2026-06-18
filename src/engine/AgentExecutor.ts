@@ -368,7 +368,7 @@ export class AgentExecutor {
 			}
 
 			const isWin = os.platform() === 'win32';
-			const suffix = isWin ? ' & echo MODELPILOT_PWD:%CD%' : ' ; echo "MODELPILOT_PWD:$(pwd)"';
+			const suffix = isWin ? ' & echo MODELPILOT_PWD:%CD%' : ' ; STATUS=$? ; echo "MODELPILOT_PWD:$(pwd)" ; exit $STATUS';
 			const fullCommand = command + suffix;
 
 			const proc = spawn(fullCommand, {

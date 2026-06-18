@@ -42,7 +42,7 @@ export class NvidiaProvider extends OpenAICompatibleProvider {
 				throw new Error('Authentication failed (401/403). Please verify your API key.');
 			}
 			return MODEL_PROFILES
-				.filter(m => m.provider === 'nvidia' && !m.id.toLowerCase().includes('gemma'))
+				.filter(m => m.provider === 'nvidia')
 				.map(m => ({ id: m.id, available: true }));
 		}
 
@@ -51,7 +51,7 @@ export class NvidiaProvider extends OpenAICompatibleProvider {
 			const liveIds = new Set(data.data.map((m: { id: string }) => m.id));
 
 			const result: LiveModel[] = MODEL_PROFILES
-				.filter(m => m.provider === 'nvidia' && !m.id.toLowerCase().includes('gemma'))
+				.filter(m => m.provider === 'nvidia')
 				.map(m => ({
 					id: m.id,
 					available: liveIds.has(m.id),
@@ -60,7 +60,7 @@ export class NvidiaProvider extends OpenAICompatibleProvider {
 			return result;
 		} catch {
 			return MODEL_PROFILES
-				.filter(m => m.provider === 'nvidia' && !m.id.toLowerCase().includes('gemma'))
+				.filter(m => m.provider === 'nvidia')
 				.map(m => ({ id: m.id, available: true }));
 		}
 

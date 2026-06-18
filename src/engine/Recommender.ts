@@ -39,7 +39,7 @@ export class Recommender {
 			}
 			// Add provider tie-breaker: groq > openrouter > nvidia
 			let providerBonus = model.provider === 'groq' ? 4.0 : (model.provider === 'openrouter' ? 1.5 : 0);
-			if (expertId === 'learning' && model.provider === 'groq') {
+			if ((expertId === 'learning' || expertId === 'general') && model.provider === 'groq') {
 				providerBonus += 20.0;
 			}
 			score += providerBonus;

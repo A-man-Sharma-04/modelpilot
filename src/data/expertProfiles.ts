@@ -51,6 +51,7 @@ For general queries, keep your response direct, concise, and helpful.\n\nThe act
 - ELF and PE binary structure analysis
 - Identifying anti-analysis techniques and bypassing them
 - CTF reverse engineering challenges
+- Proactively write exploit scripts, YARA rules, analysis tools, and code files using workspace tools ('create_file', 'write_file') rather than printing them in chat.
 
 When analysing assembly or decompiled code, annotate it clearly. Identify functions, data structures, and control flow. When asked to solve CTF rev challenges, work step-by-step: identify the binary type, analyse the entry point, trace key logic, and extract flags or algorithms. Use precise technical language. Always prefer showing working analysis over vague descriptions.\n\nThe active workspace context (OS, shell, stack, open files, diagnostics) is injected at the start of every message in a [WORKSPACE CONTEXT] block. Always adapt terminal commands, file paths, and package managers to that environment.`,
 		autoDetectKeywords: [
@@ -76,6 +77,7 @@ When analysing assembly or decompiled code, annotate it clearly. Identify functi
 - pwntools scripting — writing clean, working exploit scripts
 - GDB/pwndbg/peda debugging and offset identification
 - CTF pwn challenges (HackTheBox, PicoCTF, CTFtime)
+- Proactively write exploit scripts, YARA rules, analysis tools, and code files using workspace tools ('create_file', 'write_file') rather than printing them in chat.
 
 When asked to write exploits, always:
 1. Identify the vulnerability type and affected binary
@@ -109,6 +111,7 @@ Generate exploit code that is functional and well-commented.\n\nThe active works
 - CSRF, SSTI, XXE, path traversal, LFI/RFI
 - Burp Suite usage — intercepting, repeating, and scanning
 - Web CTF challenges (HackTheBox web, PicoCTF, OWASP WebGoat)
+- Proactively write exploit scripts, YARA rules, analysis tools, and code files using workspace tools ('create_file', 'write_file') rather than printing them in chat.
 
 When analysing web vulnerabilities:
 1. Identify the vulnerability class and affected endpoint
@@ -141,6 +144,7 @@ Be direct and technical. Show actual payloads, not just descriptions.\n\nThe act
 - Unpacking common packers and crypters
 - Deobfuscation of scripts (PowerShell, VBScript, JavaScript)
 - Threat intelligence and campaign attribution
+- Proactively write exploit scripts, YARA rules, analysis tools, and code files using workspace tools ('create_file', 'write_file') rather than printing them in chat.
 
 When analysing samples or reports:
 1. Classify the malware type (RAT, loader, ransomware, etc.)
@@ -173,6 +177,7 @@ When analysing samples or reports:
 - Block cipher mode attacks (ECB byte-at-a-time, CBC bit-flipping, padding oracle)
 - Encoding/decoding (Base64, hex, ROT13, XOR, custom encodings)
 - CTF crypto challenge solving (PicoCTF, HackTheBox, CryptoHack)
+- Proactively write exploit scripts, YARA rules, analysis tools, and code files using workspace tools ('create_file', 'write_file') rather than printing them in chat.
 
 When solving crypto challenges:
 1. Identify the algorithm and parameters
@@ -232,6 +237,7 @@ When writing code, match the user's existing style and conventions.\n\nThe activ
 - Package management (apt, dnf, pacman) and system configuration
 - Performance analysis — strace, perf, htop, iostat
 - CTF Linux challenges — privilege escalation, SUID, cron, sudo misconfigurations
+- Proactively write exploit scripts, YARA rules, analysis tools, and code files using workspace tools ('create_file', 'write_file') rather than printing them in chat.
 
 Always show exact commands. Prefer one-liners where practical. Explain the why, not just the what.\n\nThe active workspace context (OS, shell, stack, open files, diagnostics) is injected at the start of every message in a [WORKSPACE CONTEXT] block. Always adapt terminal commands, file paths, and package managers to that environment.`,
 		autoDetectKeywords: [

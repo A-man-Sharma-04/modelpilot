@@ -2390,4 +2390,190 @@ suite('ModelPilot Chat Participant Integration Tests', () => {
 		assert.ok(!resultNormal.result.includes('superuser privileges'), 'Should not block normal command');
 		assert.ok(resultNormal.result.includes('hello_world_test'), 'Should execute normal command and return output');
 	});
+
+	test('should block repeated command execution if no file changes occur in self-correction', async () => {
+		const originalGetConfiguration = vscode.workspace.getConfiguration;
+		vscode.workspace.getConfiguration = (section?: string, scope?: any) => {
+			if (section === 'modelpilot') {
+				return {
+					get: (key: string) => {
+						if (key === 'approvalMode') {
+							return 'bypass';
+						}
+						if (key === 'maxAutoFixRetries') {
+							return 3;
+						}
+						return undefined;
+					}
+				} as any;
+			}
+			return originalGetConfiguration(section, scope);
+		};
+
+		const originalRouteMethod = Router.prototype.route;
+		let callCount = 0;
+		let dummyFileCreated = false;
+
+		Router.prototype.route = async (recs, messages, tools, options) => {
+			callCount++;
+			if (callCount === 1) {
+				// Propose running a terminal command that fails
+				return {
+					content: 'Proposing command run 1',
+					toolCalls: [
+						{
+							id: 'tc-cmd-1',
+							type: 'function',
+							function: {
+								name: 'run_terminal_command',
+								arguments: JSON.stringify({ command: 'false_command_test' }),
+							},
+						},
+					],
+				};
+			} else if (callCount === 2) {
+				// Verify the error result was sent to the model with self-correction hint
+				const lastMessage = messages[messages.length - 1];
+				assert.strictEqual(lastMessage.role, 'tool');
+				assert.ok(lastMessage.content.includes('[SELF-CORRECTION REQUIRED]'), 'Should append self-correction instructions. Got content: ' + lastMessage.content);
+
+				// Propose running the EXACT same command again without editing files
+				return {
+					content: 'Proposing same command run again 2',
+					toolCalls: [
+						{
+							id: 'tc-cmd-2',
+							type: 'function',
+							function: {
+								name: 'run_terminal_command',
+								arguments: JSON.stringify({ command: 'false_command_test' }),
+							},
+						},
+					],
+				};
+			} else if (callCount === 3) {
+				// Verify the error result was sent to the model with self-correction hint
+				const lastMessage = messages[messages.length - 1];
+				assert.strictEqual(lastMessage.role, 'tool');
+				assert.ok(lastMessage.content.includes('[SELF-CORRECTION REQUIRED]'), 'Should append self-correction instructions');
+
+				// Propose running the EXACT same command again 3rd time
+				return {
+					content: 'Proposing same command run again 3',
+					toolCalls: [
+						{
+							id: 'tc-cmd-3',
+							type: 'function',
+							function: {
+								name: 'run_terminal_command',
+								arguments: JSON.stringify({ command: 'false_command_test' }),
+							},
+						},
+					],
+				};
+			} else if (callCount === 4) {
+				// Verify the error result was sent to the model with self-correction hint
+				const lastMessage = messages[messages.length - 1];
+				assert.strictEqual(lastMessage.role, 'tool');
+				assert.ok(lastMessage.content.includes('[SELF-CORRECTION REQUIRED]'), 'Should append self-correction instructions');
+
+				// Propose running the EXACT same command again 4th time.
+				// Since maxAutoFixRetries is 3, this should be blocked before execution and result in a block error tool response.
+				return {
+					content: 'Proposing same command run again 4',
+					toolCalls: [
+						{
+							id: 'tc-cmd-4',
+							type: 'function',
+							function: {
+								name: 'run_terminal_command',
+								arguments: JSON.stringify({ command: 'false_command_test' }),
+							},
+						},
+					],
+				};
+			} else if (callCount === 5) {
+				// The 4th call was blocked, so the tool output should indicate the block
+				const lastMessage = messages[messages.length - 1];
+				assert.strictEqual(lastMessage.role, 'tool');
+				assert.ok(lastMessage.content.includes('blocked from running it again'), 'Should block repeated execution');
+
+				// Now try to do a file edit first
+				dummyFileCreated = true;
+				return {
+					content: 'Proposing file write to clear blocked command',
+					toolCalls: [
+						{
+							id: 'tc-write',
+							type: 'function',
+							function: {
+								name: 'write_file',
+								arguments: JSON.stringify({ path: 'test_loop_block.txt', content: 'dummy content' }),
+							},
+						},
+					],
+				};
+			} else {
+				// The file edit succeeded, let's verify we can now run the command again (retry counter cleared)
+				return {
+					content: 'Proposing same command run after file edit',
+					toolCalls: [
+						{
+							id: 'tc-cmd-5',
+							type: 'function',
+							function: {
+								name: 'run_terminal_command',
+								arguments: JSON.stringify({ command: 'false_command_test' }),
+							},
+						},
+					],
+				};
+			}
+		};
+
+		const mockRequest: any = {
+			prompt: 'execute task',
+			command: 'agent',
+			references: [],
+		};
+		const mockContext: any = {
+			history: [],
+		};
+		const mockResponseStream: any = {
+			markdown: () => mockResponseStream,
+			progress: () => mockResponseStream,
+		};
+		const mockToken: any = {
+			isCancellationRequested: false,
+			onCancellationRequested: () => ({ dispose: () => {} }),
+		};
+
+		try {
+			await handleChatRequest(
+				mockRequest,
+				mockContext,
+				mockResponseStream,
+				mockToken,
+				mockSm as SecretsManager,
+				registry,
+				{ ...config, defaultMode: 'agent' },
+				async () => 3
+			);
+
+			assert.ok(callCount >= 6, `Expected at least 6 router calls, got ${callCount}`);
+		} finally {
+			Router.prototype.route = originalRouteMethod;
+			vscode.workspace.getConfiguration = originalGetConfiguration;
+
+			// Clean up created file
+			if (dummyFileCreated) {
+				try {
+					const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+					if (workspaceRoot) {
+						fs.unlinkSync(path.join(workspaceRoot, 'test_loop_block.txt'));
+					}
+				} catch {}
+			}
+		}
+	});
 });
