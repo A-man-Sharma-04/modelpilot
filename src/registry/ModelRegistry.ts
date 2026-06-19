@@ -1,3 +1,4 @@
+import * as vscode from 'vscode';
 import { Model } from '../providers/IProvider';
 import { IProvider } from '../providers/IProvider';
 import { getModelProfile } from '../data/modelProfiles';
@@ -5,6 +6,8 @@ import { getModelProfile } from '../data/modelProfiles';
 export class ModelRegistry {
 	private models = new Map<string, Model>();
 	private lastErrors = new Map<string, string>();
+	private readonly onDidChangeEmitter = new vscode.EventEmitter<void>();
+	readonly onDidChange = this.onDidChangeEmitter.event;
 
 	async refresh(providers: IProvider[]): Promise<void> {
 		this.models.clear();
@@ -40,6 +43,7 @@ export class ModelRegistry {
 				}
 			}
 		}
+		this.onDidChangeEmitter.fire();
 	}
 
 	getLastErrors(): Map<string, string> {

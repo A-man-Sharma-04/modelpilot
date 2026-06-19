@@ -28,6 +28,7 @@ import { decompose, inferCategory, estimateTokens, estimateMessagesTokens } from
 import { SYSTEM_PROMPT, MODE_PROMPTS, buildWorkspaceContext } from './participant/systemPrompt';
 import { AnalyticsManager } from './engine/AnalyticsManager';
 import { AnalyticsPanel } from './webview/AnalyticsPanel';
+import { ModelPilotChatProvider } from './chatProvider';
 import { ChatResult } from './providers/IProvider';
 
 async function recordUsage(
@@ -1294,6 +1295,11 @@ export function activate(context: vscode.ExtensionContext) {
 	}
 
 	refreshModels();
+
+	// Register Native Language Model Provider
+	const chatProvider = new ModelPilotChatProvider(registry, sm, analyticsManager, () => globalExpertProfile);
+	const lmProviderRegistration = vscode.lm.registerLanguageModelChatProvider('modelpilot', chatProvider);
+	context.subscriptions.push(lmProviderRegistration);
 
 	// Register Chat Participant
 	const handler: vscode.ChatRequestHandler = async (request, chatContext, response, token) => {

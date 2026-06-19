@@ -5,7 +5,7 @@
   "author": "Aman Sharma Dev",
   "icon": "images/icon.png",
   "description": "Stop comparing AI models. ModelPilot recommends the most suitable available model for your task and routes your requests automatically.",
-  "version": "0.7.1",
+  "version": "0.8.0",
   "preview": false,
   "engines": {
     "vscode": "^1.90.0"
@@ -279,7 +279,13 @@
           "when": "editorHasSelection"
         }
       ]
-    }
+    },
+    "languageModelChatProviders": [
+      {
+        "vendor": "modelpilot",
+        "displayName": "ModelPilot (Free Models)"
+      }
+    ]
   },
   "scripts": {
     "vscode:prepublish": "npm run package",
