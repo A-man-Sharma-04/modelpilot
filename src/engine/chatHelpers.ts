@@ -51,6 +51,14 @@ CONSTRAINTS:
 - Never run rm -rf, format drives, or destructive operations without explicit user confirmation.
 - Never commit, push, deploy, or publish without explicit user instruction.
 
+ABSOLUTE RULE — NEVER PRINT CODE IN CHAT:
+- When tools are available, you must NEVER output code inside fenced code blocks (\`\`\`).
+- Instead, use 'create_file' or 'write_file' tools for EVERY piece of code, script, config, or file content.
+- The ONLY acceptable chat output is explanatory text, plans, or brief summaries.
+- If you are about to write a fenced code block — STOP and use a tool instead.
+- Never tell the user to "create a file with this content" or "run this command manually". Use the tools.
+- Violations of this rule force the user to manually copy-paste code, which defeats the purpose of an agent.
+
 FORMAT TO CALL TOOLS:
 To invoke a tool, output an XML block in the following format:
 <use_tool>
@@ -123,6 +131,8 @@ Follow these instructions to ensure high-quality, reliable, and parseable output
 - Do not modify files outside the scope of the request.
 - Do not introduce console.log or print debug statements in production code.
 - Do not change function signatures unless explicitly asked.
+- Do NOT print code in fenced code blocks when file tools are available. Use create_file or write_file instead. ALWAYS.
+- Do NOT instruct the user to manually create files, run scripts, or copy-paste code. Use the tools to do it yourself.
 
 6. ROLE ANCHORING WITH PERSONA REINFORCEMENT:
 - Act as a senior engineer. Senior engineers:
@@ -682,4 +692,103 @@ export function getSafeStreamLength(text: string): number {
 	}
 
 	return text.length;
+}
+
+export interface CodeBlockEntry {
+	path: string;
+	content: string;
+	language: string;
+}
+
+/**
+ * Extracts fenced code blocks from model output that contain file path indicators.
+ * Used to intercept code that the model printed in chat instead of using create_file/write_file.
+ *
+ * Detects file paths from:
+ * - Line 1 comment: `// path/to/file.ts`, `# path/to/file.py`, `/* path *\/`, `-- path`
+ * - Preceding markdown: **`path`**: or `Create \`path\``:` or `File: path` patterns
+ */
+export function extractCodeBlocksWithPaths(text: string): CodeBlockEntry[] {
+	const results: CodeBlockEntry[] = [];
+
+	// Match fenced code blocks with optional language tag
+	const codeBlockRegex = /```(\w*)\s*\n([\s\S]*?)```/g;
+	let match;
+
+	while ((match = codeBlockRegex.exec(text)) !== null) {
+		const language = match[1] || '';
+		const content = match[2];
+		const blockStartIdx = match.index;
+
+		let filePath = '';
+
+		// Strategy 1: Check the first line of the code block for a file path comment
+		const firstLine = content.split('\n')[0].trim();
+		const commentPathPatterns = [
+			// // path/to/file.ext or // File: path/to/file.ext
+			/^\/\/\s*(?:File:\s*)?([\w.\-\/\\]+\.\w+)/,
+			// # path/to/file.ext or # File: path/to/file.ext
+			/^#\s*(?:File:\s*)?([\w.\-\/\\]+\.\w+)/,
+			// /* path/to/file.ext */ or /* File: path */
+			/^\/\*\s*(?:File:\s*)?([\w.\-\/\\]+\.\w+)\s*\*\//,
+			// -- path/to/file.ext (SQL, Lua)
+			/^--\s*(?:File:\s*)?([\w.\-\/\\]+\.\w+)/,
+			// <!-- path/to/file.ext --> (HTML, XML)
+			/^<!--\s*(?:File:\s*)?([\w.\-\/\\]+\.\w+)\s*-->/,
+		];
+		for (const pattern of commentPathPatterns) {
+			const pathMatch = firstLine.match(pattern);
+			if (pathMatch) {
+				filePath = pathMatch[1];
+				break;
+			}
+		}
+
+		// Strategy 2: Check the text immediately preceding the code block
+		if (!filePath) {
+			// Look at the 200 chars before the code block
+			const precedingText = text.slice(Math.max(0, blockStartIdx - 200), blockStartIdx);
+			const precedingPatterns = [
+				// **`path/to/file.ext`**: or **path/to/file.ext**:
+				/\*\*`?([\w.\-\/\\]+\.\w+)`?\*\*\s*:?\s*$/,
+				// `path/to/file.ext`: or `path/to/file.ext`
+				/`([\w.\-\/\\]+\.\w+)`\s*:?\s*$/,
+				// Create path/to/file.ext: or File: path/to/file.ext
+				/(?:Create|File|Update|Modify|Edit|Write|Save|In)\s*:?\s*`?([\w.\-\/\\]+\.\w+)`?\s*:?\s*$/i,
+				// path/to/file.ext: (standalone on last line)
+				/(?:^|\n)\s*([\w.\-\/\\]+\.\w+)\s*:?\s*$/,
+			];
+			for (const pattern of precedingPatterns) {
+				const pathMatch = precedingText.match(pattern);
+				if (pathMatch) {
+					filePath = pathMatch[1];
+					break;
+				}
+			}
+		}
+
+		if (filePath) {
+			// Clean up the content — remove the file path comment from line 1 if present
+			let cleanedContent = content;
+			for (const pattern of commentPathPatterns) {
+				if (pattern.test(firstLine)) {
+					const lines = cleanedContent.split('\n');
+					lines.shift(); // Remove the file path comment line
+					cleanedContent = lines.join('\n');
+					break;
+				}
+			}
+
+			// Normalize the path (remove leading ./ or /)
+			filePath = filePath.replace(/^\.[\/\\]/, '').replace(/^[\/\\]/, '');
+
+			results.push({
+				path: filePath,
+				content: cleanedContent.replace(/\n$/, ''), // trim trailing newline
+				language,
+			});
+		}
+	}
+
+	return results;
 }

@@ -21,7 +21,8 @@ import {
 	cleanJsonString,
 	cleanToolCallTags,
 	parseTextToolCalls,
-	getSafeStreamLength
+	getSafeStreamLength,
+	extractCodeBlocksWithPaths
 } from './engine/chatHelpers';
 import { decompose, inferCategory, estimateTokens, estimateMessagesTokens } from './engine/TaskDecomposer';
 import { SYSTEM_PROMPT, MODE_PROMPTS, buildWorkspaceContext } from './participant/systemPrompt';
@@ -663,6 +664,15 @@ ${classificationContext}`;
 		}
 	}
 
+	// Override: prevent 'ask' mode from disabling tools when the prompt contains code-action signals
+	if (operationMode === 'ask') {
+		const codeActionSignals = /\b(create|write|build|implement|fix|refactor|edit|generate|make|add|set\s*up|setup|scaffold|initialize|init|modify|update|delete|remove|rename|move|install|configure|deploy|migrate|convert|transform|port|rewrite)\b/i;
+		if (codeActionSignals.test(request.prompt)) {
+			operationMode = 'agent';
+			isChitchat = false;
+		}
+	}
+
 	let useTools = !isChitchat;
 	if (operationMode === 'plan') {
 		useTools = false;
@@ -925,6 +935,8 @@ ${classificationContext}`;
 
 			let streamedTextLength = 0;
 			let accumulatedText = '';
+			let insideCodeBlock = false;
+			let backtickCount = 0;
 
 			const chatResult = await router.route(
 				recs,
@@ -935,10 +947,36 @@ ${classificationContext}`;
 					onChunk: (text) => {
 						accumulatedText += text;
 						const safeLength = getSafeStreamLength(accumulatedText);
-						if (safeLength > streamedTextLength) {
-							const cleanTextToStream = accumulatedText.slice(streamedTextLength, safeLength);
-							response.markdown(cleanTextToStream);
-							streamedTextLength = safeLength;
+
+						if (useTools) {
+							// In agent mode, suppress fenced code blocks from streaming to chat.
+							// They will be intercepted and auto-written as files after the response completes.
+							const textSoFar = accumulatedText.slice(0, safeLength);
+							const tripleBacktickMatches = textSoFar.match(/```/g);
+							const currentBacktickCount = tripleBacktickMatches ? tripleBacktickMatches.length : 0;
+							insideCodeBlock = currentBacktickCount % 2 !== 0;
+
+							if (!insideCodeBlock && currentBacktickCount === backtickCount) {
+								// Not inside a code block, no new code blocks closed — stream normally
+								if (safeLength > streamedTextLength) {
+									const cleanTextToStream = accumulatedText.slice(streamedTextLength, safeLength);
+									response.markdown(cleanTextToStream);
+									streamedTextLength = safeLength;
+								}
+							} else if (!insideCodeBlock && currentBacktickCount > backtickCount) {
+								// A code block just closed — do NOT stream it (it will be intercepted later)
+								// Advance streamedTextLength to skip past the code block
+								streamedTextLength = safeLength;
+							}
+							// If inside a code block, hold — don't stream anything
+							backtickCount = currentBacktickCount;
+						} else {
+							// Non-agent mode: stream everything normally
+							if (safeLength > streamedTextLength) {
+								const cleanTextToStream = accumulatedText.slice(streamedTextLength, safeLength);
+								response.markdown(cleanTextToStream);
+								streamedTextLength = safeLength;
+							}
 						}
 					},
 					maxTokens: 4096,
@@ -971,6 +1009,37 @@ ${classificationContext}`;
 			apiMessages.push(assistantMessage);
 
 			if (toolCalls.length === 0) {
+				// The model returned text with no tool calls.
+				// If we're in agent mode, check for code blocks that should have been file operations.
+				if (useTools) {
+					const interceptedBlocks = extractCodeBlocksWithPaths(assistantText);
+
+					if (interceptedBlocks.length > 0) {
+						// Auto-create files from intercepted code blocks
+						for (const block of interceptedBlocks) {
+							try {
+								response.progress(`Auto-creating file: ${block.path}`);
+								await AgentExecutor.execute('create_file', { path: block.path, content: block.content }, agentCwd);
+								response.markdown(`\n✅ Created **${block.path}**\n`);
+							} catch (err) {
+								response.markdown(`\n⚠️ Failed to create **${block.path}**: ${err instanceof Error ? err.message : String(err)}\n`);
+							}
+						}
+						break;
+					}
+
+					// Check if the response contains ANY fenced code blocks (even without detectable paths)
+					const hasCodeBlocks = /```\w*\s*\n[\s\S]*?```/.test(assistantText);
+					if (hasCodeBlocks && loopIteration < maxIterations) {
+						// Inject a correction and re-prompt (one attempt only)
+						apiMessages.push({
+							role: 'user',
+							content: '[CORRECTION] You printed code in the chat response using fenced code blocks instead of using the create_file or write_file tools. This is not acceptable. You MUST use the file tools to write code into the workspace. Re-do your previous response — use create_file or write_file for every code file. Do NOT print any code in the chat.'
+						});
+						// Don't break — let the loop re-prompt the model
+						continue;
+					}
+				}
 				break;
 			}
 
