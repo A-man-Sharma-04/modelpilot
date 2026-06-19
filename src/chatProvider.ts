@@ -88,7 +88,7 @@ export class ModelPilotChatProvider implements vscode.LanguageModelChatProvider<
 
 		// 1. Add the Auto Router model
 		models.push({
-			id: 'auto',
+			id: 'modelpilot::auto',
 			name: 'ModelPilot (Auto Router)',
 			family: 'modelpilot',
 			detail: 'Auto-recommends & routes requests',
@@ -148,7 +148,7 @@ export class ModelPilotChatProvider implements vscode.LanguageModelChatProvider<
 
 		try {
 			let recs: Recommendation[] = [];
-			if (model.id === 'auto') {
+			if (model.id === 'modelpilot::auto') {
 				const expertId = this.getExpertId();
 				const recommender = new Recommender(this.registry);
 				const inputTokens = estimateMessagesTokens(apiMessages);
