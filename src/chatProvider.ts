@@ -108,7 +108,7 @@ export class ModelPilotChatProvider implements vscode.LanguageModelChatProvider<
 			models.push({
 				id: `${model.provider}::${model.id}`,
 				name: model.displayName,
-				family: model.provider,
+				family: 'modelpilot',
 				detail: `${model.provider.toUpperCase()} · Context: ${(model.contextLength / 1000).toFixed(0)}k`,
 				tooltip: model.description,
 				version: model.lastVerified || '1.0.0',
