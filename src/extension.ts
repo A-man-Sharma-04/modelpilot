@@ -5,6 +5,7 @@ import * as os from 'os';
 import { NvidiaProvider } from './providers/NvidiaProvider';
 import { OpenRouterProvider } from './providers/OpenRouterProvider';
 import { GroqProvider } from './providers/GroqProvider';
+import { CerebrasProvider } from './providers/CerebrasProvider';
 import { ModelRegistry } from './registry/ModelRegistry';
 import { Recommender } from './engine/Recommender';
 import { Router } from './engine/Router';
@@ -586,6 +587,7 @@ export async function executeSingleTask(
 					new NvidiaProvider(keys.nvidia),
 					new OpenRouterProvider(keys.openrouter),
 					new GroqProvider(keys.groq),
+					new CerebrasProvider(keys.cerebras),
 				];
 				const router = new Router(providers);
 
@@ -814,6 +816,7 @@ ${classificationContext}`;
 		new NvidiaProvider(keys.nvidia),
 		new OpenRouterProvider(keys.openrouter),
 		new GroqProvider(keys.groq),
+		new CerebrasProvider(keys.cerebras),
 	];
 	const router = new Router(providers);
 
@@ -1210,6 +1213,7 @@ export function activate(context: vscode.ExtensionContext) {
 					new NvidiaProvider(keys.nvidia),
 					new OpenRouterProvider(keys.openrouter),
 					new GroqProvider(keys.groq),
+					new CerebrasProvider(keys.cerebras),
 				];
 				await registry.refresh(providers);
 				return registry.getAvailable().length;
@@ -1261,6 +1265,11 @@ export function activate(context: vscode.ExtensionContext) {
 					label: 'Groq',
 					detail: 'Very fast inference — Llama, Mixtral, Gemma',
 					id: 'groq',
+				},
+				{
+					label: 'Cerebras',
+					detail: 'Ultra-fast wafer-scale inference — Llama, GPT-OSS, GLM',
+					id: 'cerebras',
 				},
 			];
 

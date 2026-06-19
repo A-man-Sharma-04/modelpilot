@@ -2,6 +2,7 @@ import { IProvider, Message, ChatOptions, ChatResult, Tool } from '../providers/
 import { Recommendation } from './Recommender';
 import { healthMonitor } from './HealthMonitor';
 import { estimateMessagesTokens, fitMessagesToContext } from './TaskDecomposer';
+import { parseRetryAfter } from '../providers/OpenAICompatibleProvider';
 
 export class Router {
 	constructor(private readonly providers: IProvider[]) { }
@@ -115,6 +116,82 @@ export class Router {
 						errors.push(`Skipped ${skippedCount} subsequent NVIDIA NIM models on provider failure.`);
 						i = nextIndex - 1;
 					}
+				}
+			}
+		}
+
+		// ── Cooldown-Aware Retry Pass ──
+		// Before giving up, check if any failed candidates had short rate-limit cooldowns
+		// that we can wait out (≤30 seconds). This prevents premature task failure.
+		const retryableCandidates: { index: number; delayMs: number }[] = [];
+		for (let i = 0; i < candidateRecs.length; i++) {
+			const errorMsg = errors.find(e => e.startsWith(candidateRecs[i].model.displayName));
+			if (!errorMsg) { continue; }
+
+			// Extract retry delay from error messages (429 rate limit responses)
+			const retryDelaySec = parseRetryAfter(errorMsg);
+			if (retryDelaySec > 0 && retryDelaySec <= 30) {
+				retryableCandidates.push({ index: i, delayMs: retryDelaySec * 1000 });
+			}
+		}
+
+		if (retryableCandidates.length > 0) {
+			const shortestDelay = Math.min(...retryableCandidates.map(c => c.delayMs));
+			const retryProviderNames = [...new Set(retryableCandidates.map(c => candidateRecs[c.index].model.provider))];
+
+			if (onFallback) {
+				onFallback(
+					'All models',
+					retryProviderNames.join(', '),
+					`Rate-limited. Waiting ${Math.ceil(shortestDelay / 1000)}s for cooldown...`
+				);
+			}
+
+			// Abort-aware wait with 0-1000ms jitter
+			await new Promise<void>((resolve, reject) => {
+				if (options.abortSignal?.aborted) {
+					return reject(new Error('Aborted'));
+				}
+				const onAbort = () => {
+					clearTimeout(timer);
+					reject(new Error('Aborted'));
+				};
+				const timer = setTimeout(() => {
+					if (options.abortSignal) {
+						options.abortSignal.removeEventListener('abort', onAbort);
+					}
+					resolve();
+				}, shortestDelay + Math.floor(Math.random() * 1000));
+				if (options.abortSignal) {
+					options.abortSignal.addEventListener('abort', onAbort);
+				}
+			});
+
+			// Retry only the retryable candidates (one pass, no further cooldown waits)
+			for (const { index } of retryableCandidates) {
+				const rec = candidateRecs[index];
+				const provider = this.getProvider(rec.model.provider);
+				if (!provider) { continue; }
+
+				const startTime = Date.now();
+				try {
+					const safeInput = (rec.model as any).safeInputTokens
+						?? Math.floor((rec.model.contextLength / 4) * 0.75);
+					const fittedMessages = fitMessagesToContext(
+						messages,
+						rec.model.provider,
+						systemTokens,
+						safeInput,
+					);
+					const response = await provider.chat(rec.model.id, fittedMessages, tools, undefined, options);
+					healthMonitor.recordSuccess(rec.model.provider, Date.now() - startTime);
+					response.provider = rec.model.provider;
+					response.modelId = rec.model.id;
+					return response;
+				} catch (retryErr) {
+					healthMonitor.recordFailure(rec.model.provider);
+					const retryReason = retryErr instanceof Error ? retryErr.message : String(retryErr);
+					errors.push(`${rec.model.displayName} (retry): ${retryReason}`);
 				}
 			}
 		}

@@ -17,7 +17,7 @@ export interface ModelCapabilities {
 
 export interface ModelProfile {
 	id: string;
-	provider: 'nvidia' | 'openrouter' | 'groq';
+	provider: 'nvidia' | 'openrouter' | 'groq' | 'cerebras';
 	displayName: string;
 	contextLength: number;
 	capabilities: ModelCapabilities;
@@ -348,6 +348,72 @@ export const MODEL_PROFILES: ModelProfile[] = [
 		safeInputTokens: 3000,
 		inputPricePerM: 0.06,
 		outputPricePerM: 0.06,
+	},
+
+	// ─── CEREBRAS ─────────────────────────────────────────────────────────────
+
+	{
+		id: 'llama3.1-8b',
+		provider: 'cerebras',
+		displayName: 'Llama 3.1 8B (Cerebras)',
+		contextLength: 8192,
+		capabilities: { coding: 5, reasoning: 4, writing: 5, learning: 8, security: 3, speed: 10 },
+		description: 'Ultra-fast Llama 3.1 8B on Cerebras — ideal for intent classification and quick tasks.',
+		humanLabel: 'Best for Classification',
+		lastVerified: '2026-06-19',
+		maxOutputTokens: 1024,
+		safeInputTokens: 3000,
+		inputPricePerM: 0.10,
+		outputPricePerM: 0.10,
+	},
+	{
+		id: 'llama-3.3-70b',
+		provider: 'cerebras',
+		displayName: 'Llama 3.3 70B (Cerebras)',
+		contextLength: 128000,
+		capabilities: { coding: 7, reasoning: 7, writing: 8, learning: 7, security: 6, speed: 9 },
+		description: 'Llama 3.3 70B on Cerebras — fast general-purpose inference.',
+		lastVerified: '2026-06-19',
+		maxOutputTokens: 2048,
+		safeInputTokens: 5000,
+		inputPricePerM: 0.70,
+		outputPricePerM: 0.90,
+	},
+	{
+		id: 'llama-4-scout-17b-16e-instruct',
+		provider: 'cerebras',
+		displayName: 'Llama 4 Scout 17B (Cerebras)',
+		contextLength: 128000,
+		capabilities: { coding: 6, reasoning: 6, writing: 7, learning: 7, security: 5, speed: 9 },
+		description: 'Llama 4 Scout 17B MoE on Cerebras — balanced speed and quality.',
+		lastVerified: '2026-06-19',
+		maxOutputTokens: 2048,
+		safeInputTokens: 5000,
+		inputPricePerM: 0.20,
+		outputPricePerM: 0.60,
+	},
+	{
+		id: 'gpt-oss-120b',
+		provider: 'cerebras',
+		displayName: 'GPT OSS 120B (Cerebras)',
+		contextLength: 131072,
+		capabilities: { coding: 8, reasoning: 8, writing: 8, learning: 8, security: 7, speed: 8 },
+		description: 'GPT-OSS 120B MoE on Cerebras — high-quality reasoning at speed.',
+		lastVerified: '2026-06-19',
+		inputPricePerM: 1.00,
+		outputPricePerM: 2.00,
+	},
+	{
+		id: 'zai-glm-4.7',
+		provider: 'cerebras',
+		displayName: 'GLM 4.7 (Cerebras)',
+		contextLength: 131072,
+		capabilities: { coding: 9, reasoning: 9, writing: 8, learning: 8, security: 8, speed: 8 },
+		description: 'Z.ai GLM 4.7 355B on Cerebras — programming-focused large model.',
+		humanLabel: 'Best for Coding (Fast)',
+		lastVerified: '2026-06-19',
+		inputPricePerM: 2.00,
+		outputPricePerM: 4.00,
 	},
 ];
 

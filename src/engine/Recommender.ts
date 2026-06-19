@@ -37,8 +37,8 @@ export class Recommender {
 				const capValue = model.capabilities[dim as keyof ModelCapabilities] ?? 5;
 				score += capValue * (weight ?? 0);
 			}
-			// Add provider tie-breaker: groq > openrouter > nvidia
-			let providerBonus = model.provider === 'groq' ? 4.0 : (model.provider === 'openrouter' ? 1.5 : 0);
+			// Add provider tie-breaker: groq > cerebras > openrouter > nvidia
+			let providerBonus = model.provider === 'groq' ? 4.0 : (model.provider === 'cerebras' ? 3.0 : (model.provider === 'openrouter' ? 1.5 : 0));
 			if ((expertId === 'learning' || expertId === 'general') && model.provider === 'groq') {
 				providerBonus += 20.0;
 			}
@@ -60,7 +60,7 @@ export class Recommender {
 	recommendForSpeed(limit = 6): Recommendation[] {
 		const available = this.registry.getAvailable();
 		const scored = available.map(model => {
-			const providerBonus = model.provider === 'groq' ? 15 : (model.provider === 'openrouter' ? 5 : 0);
+			const providerBonus = model.provider === 'groq' ? 15 : (model.provider === 'cerebras' ? 12 : (model.provider === 'openrouter' ? 5 : 0));
 			return {
 				model,
 				score: (model.capabilities.speed ?? 5) * 10 + providerBonus

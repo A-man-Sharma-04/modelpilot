@@ -4,6 +4,7 @@ const KEYS = {
 	nvidia:      'modelpilot.nvidia.apikey',
 	openrouter:  'modelpilot.openrouter.apikey',
 	groq:        'modelpilot.groq.apikey',
+	cerebras:    'modelpilot.cerebras.apikey',
 } as const;
 
 export type ProviderName = keyof typeof KEYS;
@@ -38,11 +39,12 @@ export class SecretsManager {
 	}
 
 	async getAll(): Promise<Record<ProviderName, string[]>> {
-		const [nvidia, openrouter, groq] = await Promise.all([
+		const [nvidia, openrouter, groq, cerebras] = await Promise.all([
 			this.get('nvidia'),
 			this.get('openrouter'),
 			this.get('groq'),
+			this.get('cerebras'),
 		]);
-		return { nvidia, openrouter, groq };
+		return { nvidia, openrouter, groq, cerebras };
 	}
 }
