@@ -110,7 +110,7 @@ export class AnalyticsPanel {
 
 	private async getProviderStatus() {
 		const keys = await this.secretsManager.getAll();
-		const providers = ['nvidia', 'groq', 'openrouter'];
+		const providers = ['nvidia', 'groq', 'openrouter', 'cerebras'];
 		const status: Record<
 			string,
 			{
@@ -487,6 +487,11 @@ export class AnalyticsPanel {
 			color: var(--accent-secondary);
 		}
 
+		.badge-provider.cerebras {
+			background: rgba(229, 28, 35, 0.15);
+			color: #e51c23;
+		}
+
 		.cost-saving {
 			color: var(--success);
 			font-weight: 600;
@@ -699,6 +704,47 @@ export class AnalyticsPanel {
 					</div>
 				</div>
 			</div>
+
+			<!-- Cerebras Card -->
+			<div class="provider-card" id="cerebras-card">
+				<div class="provider-header">
+					<h3 class="provider-name">Cerebras</h3>
+					<div class="pulse-dot" id="cerebras-pulse"></div>
+				</div>
+				
+				<div class="safety-meter-container">
+					<div class="meter-label-row">
+						<span class="meter-status-text">Safety Meter</span>
+						<span class="meter-badge unconfigured" id="cerebras-badge">Unconfigured</span>
+					</div>
+					<div class="meter-bar">
+						<div class="meter-fill unconfigured" id="cerebras-meter-fill"></div>
+					</div>
+				</div>
+
+				<div class="cooldown-list" id="cerebras-cooldowns" style="display: none;">
+					<!-- Dinamically filled -->
+				</div>
+
+				<div class="stats-table">
+					<div class="stats-row">
+						<span class="stats-label">Requests Sent</span>
+						<span class="stats-val" id="cerebras-requests">0</span>
+					</div>
+					<div class="stats-row">
+						<span class="stats-label">Input Tokens</span>
+						<span class="stats-val" id="cerebras-input-tokens">0</span>
+					</div>
+					<div class="stats-row">
+						<span class="stats-label">Output Tokens</span>
+						<span class="stats-val" id="cerebras-output-tokens">0</span>
+					</div>
+					<div class="stats-row" style="font-weight: 600;">
+						<span class="stats-label" style="color: var(--text-primary);">Total Tokens</span>
+						<span class="stats-val" id="cerebras-total-tokens">0</span>
+					</div>
+				</div>
+			</div>
 		</div>
 
 		<!-- Model Breakdown Section -->
@@ -743,7 +789,8 @@ export class AnalyticsPanel {
 		let activeCooldowns = {
 			nvidia: [],
 			groq: [],
-			openrouter: []
+			openrouter: [],
+			cerebras: []
 		};
 
 		function resetData() {
@@ -766,7 +813,7 @@ export class AnalyticsPanel {
 				let totalReqs = 0;
 				let totalTkn = 0;
 				
-				const providers = ['nvidia', 'groq', 'openrouter'];
+				const providers = ['nvidia', 'groq', 'openrouter', 'cerebras'];
 				providers.forEach(p => {
 					const stats = data.providers[p] || { requests: 0, promptTokens: 0, completionTokens: 0, totalTokens: 0 };
 					totalReqs += stats.requests;
@@ -887,7 +934,7 @@ export class AnalyticsPanel {
 
 		// Run a fast timer to update remaining cooldown seconds in real-time
 		setInterval(() => {
-			const providers = ['nvidia', 'groq', 'openrouter'];
+			const providers = ['nvidia', 'groq', 'openrouter', 'cerebras'];
 			providers.forEach(p => {
 				const list = activeCooldowns[p];
 				if (list && list.length > 0) {

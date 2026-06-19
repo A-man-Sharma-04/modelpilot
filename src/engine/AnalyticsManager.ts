@@ -54,6 +54,7 @@ export class AnalyticsManager {
 				nvidia: INITIAL_STATS(),
 				groq: INITIAL_STATS(),
 				openrouter: INITIAL_STATS(),
+				cerebras: INITIAL_STATS(),
 			},
 			models: {},
 		};
@@ -63,6 +64,7 @@ export class AnalyticsManager {
 			if (!providers.nvidia) { providers.nvidia = INITIAL_STATS(); }
 			if (!providers.groq) { providers.groq = INITIAL_STATS(); }
 			if (!providers.openrouter) { providers.openrouter = INITIAL_STATS(); }
+			if (!providers.cerebras) { providers.cerebras = INITIAL_STATS(); }
 			return {
 				providers,
 				models: saved.models || {},
@@ -111,7 +113,7 @@ export class AnalyticsManager {
 		const commercialCost = (promptTokens * inputRate) / 1000000.0 + (completionTokens * outputRate) / 1000000.0;
 		
 		// Determine actual charge (0 if free)
-		const isFree = name === 'nvidia' || name === 'groq' || modelId.endsWith(':free');
+		const isFree = name === 'nvidia' || name === 'groq' || name === 'cerebras' || modelId.endsWith(':free');
 		const actualCost = isFree ? 0.0 : commercialCost;
 
 		// Record model-level stats
@@ -151,6 +153,7 @@ export class AnalyticsManager {
 				nvidia: INITIAL_STATS(),
 				groq: INITIAL_STATS(),
 				openrouter: INITIAL_STATS(),
+				cerebras: INITIAL_STATS(),
 			},
 			models: {},
 		};
