@@ -110,7 +110,7 @@ export class AnalyticsPanel {
 
 	private async getProviderStatus() {
 		const keys = await this.secretsManager.getAll();
-		const providers = ['nvidia', 'groq', 'openrouter', 'cerebras'];
+		const providers = ['nvidia', 'groq', 'openrouter', 'cerebras', 'google'];
 		const status: Record<
 			string,
 			{
@@ -492,6 +492,11 @@ export class AnalyticsPanel {
 			color: #e51c23;
 		}
 
+		.badge-provider.google {
+			background: rgba(66, 133, 244, 0.15);
+			color: #4285f4;
+		}
+
 		.cost-saving {
 			color: var(--success);
 			font-weight: 600;
@@ -745,6 +750,47 @@ export class AnalyticsPanel {
 					</div>
 				</div>
 			</div>
+
+			<!-- Google Card -->
+			<div class="provider-card" id="google-card">
+				<div class="provider-header">
+					<h3 class="provider-name">Google AI Studio</h3>
+					<div class="pulse-dot" id="google-pulse"></div>
+				</div>
+				
+				<div class="safety-meter-container">
+					<div class="meter-label-row">
+						<span class="meter-status-text">Safety Meter</span>
+						<span class="meter-badge unconfigured" id="google-badge">Unconfigured</span>
+					</div>
+					<div class="meter-bar">
+						<div class="meter-fill unconfigured" id="google-meter-fill"></div>
+					</div>
+				</div>
+
+				<div class="cooldown-list" id="google-cooldowns" style="display: none;">
+					<!-- Dinamically filled -->
+				</div>
+
+				<div class="stats-table">
+					<div class="stats-row">
+						<span class="stats-label">Requests Sent</span>
+						<span class="stats-val" id="google-requests">0</span>
+					</div>
+					<div class="stats-row">
+						<span class="stats-label">Input Tokens</span>
+						<span class="stats-val" id="google-input-tokens">0</span>
+					</div>
+					<div class="stats-row">
+						<span class="stats-label">Output Tokens</span>
+						<span class="stats-val" id="google-output-tokens">0</span>
+					</div>
+					<div class="stats-row" style="font-weight: 600;">
+						<span class="stats-label" style="color: var(--text-primary);">Total Tokens</span>
+						<span class="stats-val" id="google-total-tokens">0</span>
+					</div>
+				</div>
+			</div>
 		</div>
 
 		<!-- Model Breakdown Section -->
@@ -790,7 +836,8 @@ export class AnalyticsPanel {
 			nvidia: [],
 			groq: [],
 			openrouter: [],
-			cerebras: []
+			cerebras: [],
+			google: []
 		};
 
 		function resetData() {
@@ -813,7 +860,7 @@ export class AnalyticsPanel {
 				let totalReqs = 0;
 				let totalTkn = 0;
 				
-				const providers = ['nvidia', 'groq', 'openrouter', 'cerebras'];
+				const providers = ['nvidia', 'groq', 'openrouter', 'cerebras', 'google'];
 				providers.forEach(p => {
 					const stats = data.providers[p] || { requests: 0, promptTokens: 0, completionTokens: 0, totalTokens: 0 };
 					totalReqs += stats.requests;
@@ -934,7 +981,7 @@ export class AnalyticsPanel {
 
 		// Run a fast timer to update remaining cooldown seconds in real-time
 		setInterval(() => {
-			const providers = ['nvidia', 'groq', 'openrouter', 'cerebras'];
+			const providers = ['nvidia', 'groq', 'openrouter', 'cerebras', 'google'];
 			providers.forEach(p => {
 				const list = activeCooldowns[p];
 				if (list && list.length > 0) {

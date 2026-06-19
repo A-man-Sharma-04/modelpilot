@@ -35,10 +35,11 @@ suite('ModelPilot Analytics & Savings Panel Tests', () => {
 
 	test('AnalyticsManager initial state', () => {
 		const data = manager.getData();
-		assert.strictEqual(data.providers.nvidia.requests, 0);
+				assert.strictEqual(data.providers.nvidia.requests, 0);
 		assert.strictEqual(data.providers.groq.requests, 0);
 		assert.strictEqual(data.providers.openrouter.requests, 0);
 		assert.strictEqual(data.providers.cerebras.requests, 0);
+		assert.strictEqual(data.providers.google.requests, 0);
 		assert.strictEqual(manager.calculateSavings(data), 0.0);
 		assert.strictEqual(manager.getSavingsString(data), '$0.00');
 	});
@@ -92,9 +93,20 @@ suite('ModelPilot Analytics & Savings Panel Tests', () => {
 		assert.strictEqual(mStats4.actualCost, 0.00);
 		assert.strictEqual(data.providers.cerebras.requests, 1);
 
+		// 5. Record Google request with 'gemini-2.5-pro'
+		// Input rate: $1.25/M, Output rate: $5.00/M
+		// 1M input + 1M output -> Commercial cost: $1.25 + $5.00 = $6.25. Actual cost: $0.00 (Google is free provider).
+		data = await manager.recordRequest('google', 'gemini-2.5-pro', 1000000, 1000000);
+		
+		const mStats5 = data.models['gemini-2.5-pro'];
+		assert.ok(mStats5);
+		assert.strictEqual(mStats5.commercialCost, 6.25);
+		assert.strictEqual(mStats5.actualCost, 0.00);
+		assert.strictEqual(data.providers.google.requests, 1);
+
 		const savings = manager.calculateSavings(data);
-		assert.ok(Math.abs(savings - 8.99) < 0.0001, `Expected savings to be close to 8.99, got ${savings}`);
-		assert.strictEqual(manager.getSavingsString(data), '$8.99');
+		assert.ok(Math.abs(savings - 15.24) < 0.0001, `Expected savings to be close to 15.24, got ${savings}`);
+		assert.strictEqual(manager.getSavingsString(data), '$15.24');
 	});
 
 	test('AnalyticsManager triggers event on changes', async () => {
@@ -119,6 +131,7 @@ suite('ModelPilot Analytics & Savings Panel Tests', () => {
 		assert.strictEqual(data.providers.groq.requests, 0);
 		assert.strictEqual(data.providers.nvidia.requests, 0);
 		assert.strictEqual(data.providers.cerebras.requests, 0);
+		assert.strictEqual(data.providers.google.requests, 0);
 		assert.strictEqual(Object.keys(data.models).length, 0);
 		assert.strictEqual(manager.calculateSavings(data), 0.0);
 	});

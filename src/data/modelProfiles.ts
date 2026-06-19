@@ -17,7 +17,7 @@ export interface ModelCapabilities {
 
 export interface ModelProfile {
 	id: string;
-	provider: 'nvidia' | 'openrouter' | 'groq' | 'cerebras';
+	provider: 'nvidia' | 'openrouter' | 'groq' | 'cerebras' | 'google';
 	displayName: string;
 	contextLength: number;
 	capabilities: ModelCapabilities;
@@ -414,6 +414,38 @@ export const MODEL_PROFILES: ModelProfile[] = [
 		lastVerified: '2026-06-19',
 		inputPricePerM: 2.00,
 		outputPricePerM: 4.00,
+	},
+
+	// ─── GOOGLE GEMINI ───────────────────────────────────────────────────────────
+
+	{
+		id: 'gemini-2.5-pro',
+		provider: 'google',
+		displayName: 'Gemini 2.5 Pro',
+		contextLength: 1000000,
+		capabilities: { coding: 9, reasoning: 10, writing: 9, learning: 8, security: 8, speed: 4 },
+		description: 'Google Gemini 2.5 Pro — exceptional reasoning, coding, and writing with a massive 1M context length.',
+		humanLabel: 'Best for Large Context',
+		lastVerified: '2026-06-19',
+		supportsNativeTools: true,
+		maxOutputTokens: 8192,
+		safeInputTokens: 1000000,
+		inputPricePerM: 1.25,
+		outputPricePerM: 5.00,
+	},
+	{
+		id: 'gemini-2.5-flash',
+		provider: 'google',
+		displayName: 'Gemini 2.5 Flash',
+		contextLength: 1000000,
+		capabilities: { coding: 7, reasoning: 7, writing: 8, learning: 8, security: 6, speed: 9 },
+		description: 'Google Gemini 2.5 Flash — fast, efficient, and versatile with a massive 1M context length.',
+		lastVerified: '2026-06-19',
+		supportsNativeTools: true,
+		maxOutputTokens: 8192,
+		safeInputTokens: 1000000,
+		inputPricePerM: 0.075,
+		outputPricePerM: 0.30,
 	},
 ];
 

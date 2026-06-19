@@ -7,6 +7,7 @@ import { NvidiaProvider } from './providers/NvidiaProvider';
 import { OpenRouterProvider } from './providers/OpenRouterProvider';
 import { GroqProvider } from './providers/GroqProvider';
 import { CerebrasProvider } from './providers/CerebrasProvider';
+import { GoogleProvider } from './providers/GoogleProvider';
 import { Message, Tool, ToolCall } from './providers/IProvider';
 import { estimateMessagesTokens, estimateTokens } from './engine/TaskDecomposer';
 import { AnalyticsManager } from './engine/AnalyticsManager';
@@ -176,6 +177,7 @@ export class ModelPilotChatProvider implements vscode.LanguageModelChatProvider<
 				new OpenRouterProvider(keys.openrouter),
 				new GroqProvider(keys.groq),
 				new CerebrasProvider(keys.cerebras),
+				new GoogleProvider(keys.google),
 			];
 			const router = new Router(providers);
 

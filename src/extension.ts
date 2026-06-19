@@ -6,6 +6,7 @@ import { NvidiaProvider } from './providers/NvidiaProvider';
 import { OpenRouterProvider } from './providers/OpenRouterProvider';
 import { GroqProvider } from './providers/GroqProvider';
 import { CerebrasProvider } from './providers/CerebrasProvider';
+import { GoogleProvider } from './providers/GoogleProvider';
 import { ModelRegistry } from './registry/ModelRegistry';
 import { Recommender } from './engine/Recommender';
 import { Router } from './engine/Router';
@@ -590,6 +591,7 @@ export async function executeSingleTask(
 					new OpenRouterProvider(keys.openrouter),
 					new GroqProvider(keys.groq),
 					new CerebrasProvider(keys.cerebras),
+					new GoogleProvider(keys.google),
 				];
 				const router = new Router(providers);
 
@@ -828,6 +830,7 @@ ${classificationContext}`;
 		new OpenRouterProvider(keys.openrouter),
 		new GroqProvider(keys.groq),
 		new CerebrasProvider(keys.cerebras),
+		new GoogleProvider(keys.google),
 	];
 	const router = new Router(providers);
 
@@ -1284,6 +1287,7 @@ export function activate(context: vscode.ExtensionContext) {
 					new OpenRouterProvider(keys.openrouter),
 					new GroqProvider(keys.groq),
 					new CerebrasProvider(keys.cerebras),
+					new GoogleProvider(keys.google),
 				];
 				await registry.refresh(providers);
 				return registry.getAvailable().length;
@@ -1345,6 +1349,11 @@ export function activate(context: vscode.ExtensionContext) {
 					label: 'Cerebras',
 					detail: 'Ultra-fast wafer-scale inference — Llama, GPT-OSS, GLM',
 					id: 'cerebras',
+				},
+				{
+					label: 'Google AI Studio',
+					detail: 'Free models: Gemini 2.5 Pro (1M context), Gemini 2.5 Flash',
+					id: 'google',
 				},
 			];
 
