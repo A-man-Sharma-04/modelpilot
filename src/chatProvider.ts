@@ -181,6 +181,8 @@ export class ModelPilotChatProvider implements vscode.LanguageModelChatProvider<
 			];
 			const router = new Router(providers);
 
+			const startTime = Date.now();
+			let fallbackCount = 0;
 			const chatResult = await router.route(
 				recs,
 				apiMessages,
@@ -191,6 +193,9 @@ export class ModelPilotChatProvider implements vscode.LanguageModelChatProvider<
 					onChunk: (text) => {
 						progress.report(new vscode.LanguageModelTextPart(text));
 					}
+				},
+				() => {
+					fallbackCount++;
 				}
 			);
 
@@ -210,8 +215,18 @@ export class ModelPilotChatProvider implements vscode.LanguageModelChatProvider<
 			const finalModelId = chatResult.modelId || recs[0].model.id;
 			const promptTokens = chatResult.usage?.promptTokens ?? estimateMessagesTokens(apiMessages);
 			const completionTokens = chatResult.usage?.completionTokens ?? estimateTokens(chatResult.content);
+			const latencyMs = Date.now() - startTime;
 
-			await this.analyticsManager.recordRequest(finalProvider, finalModelId, promptTokens, completionTokens);
+			await this.analyticsManager.recordRequest(
+				finalProvider,
+				finalModelId,
+				promptTokens,
+				completionTokens,
+				latencyMs,
+				fallbackCount,
+				apiMessages,
+				chatResult.content
+			);
 		} finally {
 			abortListener.dispose();
 		}

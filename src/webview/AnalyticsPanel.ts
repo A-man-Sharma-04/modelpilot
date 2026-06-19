@@ -82,6 +82,46 @@ export class AnalyticsPanel {
 					case 'refresh':
 						this.refresh();
 						break;
+					case 'exportFineTuning':
+						try {
+							const ftData = this.analyticsManager.getData();
+							if (!ftData.fineTuningData || ftData.fineTuningData.length === 0) {
+								vscode.window.showWarningMessage('No successful chats recorded yet to export for fine-tuning.');
+								break;
+							}
+
+							const saveUri = await vscode.window.showSaveDialog({
+								title: 'Export Fine-Tuning Data (JSONL)',
+								defaultUri: vscode.Uri.file('modelpilot-finetuning.jsonl'),
+								filters: {
+									'JSON Lines': ['jsonl']
+								}
+							});
+
+							if (saveUri) {
+								const lines: string[] = [];
+								for (const record of ftData.fineTuningData) {
+									const formattedMsgs = record.messages.map(m => ({
+										role: m.role,
+										content: m.content
+									}));
+									
+									formattedMsgs.push({
+										role: 'assistant',
+										content: record.response
+									});
+
+									lines.push(JSON.stringify({ messages: formattedMsgs }));
+								}
+
+								const fileContent = lines.join('\n') + '\n';
+								await vscode.workspace.fs.writeFile(saveUri, Buffer.from(fileContent, 'utf8'));
+								vscode.window.showInformationMessage(`Successfully exported ${ftData.fineTuningData.length} training examples.`);
+							}
+						} catch (err: any) {
+							vscode.window.showErrorMessage(`Failed to export: ${err.message || String(err)}`);
+						}
+						break;
 				}
 			},
 			null,
@@ -583,6 +623,9 @@ export class AnalyticsPanel {
 				<div class="badge">
 					Total Tokens Tracked: <span id="total-tokens">0</span>
 				</div>
+				<div class="badge">
+					Total Fallbacks: <span id="total-fallbacks">0</span>
+				</div>
 			</div>
 		</div>
 
@@ -804,6 +847,7 @@ export class AnalyticsPanel {
 							<th>Provider</th>
 							<th>Requests</th>
 							<th>Total Tokens</th>
+							<th>Avg Latency</th>
 							<th>Commercial Cost (Paid APIs)</th>
 							<th>Actual Cost</th>
 							<th>Net Savings</th>
@@ -820,6 +864,10 @@ export class AnalyticsPanel {
 			<button class="btn-reset" onclick="resetData()">
 				<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M10 11v6M14 11v6"/></svg>
 				Reset Statistics
+			</button>
+			<button class="btn-refresh" onclick="exportFineTuning()" style="background-color: var(--accent-secondary); color: white;">
+				<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>
+				Export Fine-Tuning Data (JSONL)
 			</button>
 			<button class="btn-refresh" onclick="refreshData()">
 				<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/></svg>
@@ -848,6 +896,10 @@ export class AnalyticsPanel {
 			vscode.postMessage({ command: 'refresh' });
 		}
 
+		function exportFineTuning() {
+			vscode.postMessage({ command: 'exportFineTuning' });
+		}
+
 		// Handle updates from extension
 		window.addEventListener('message', event => {
 			const message = event.data;
@@ -859,12 +911,14 @@ export class AnalyticsPanel {
 				
 				let totalReqs = 0;
 				let totalTkn = 0;
+				let totalFallbacks = 0;
 				
 				const providers = ['nvidia', 'groq', 'openrouter', 'cerebras', 'google'];
 				providers.forEach(p => {
-					const stats = data.providers[p] || { requests: 0, promptTokens: 0, completionTokens: 0, totalTokens: 0 };
+					const stats = data.providers[p] || { requests: 0, promptTokens: 0, completionTokens: 0, totalTokens: 0, totalLatencyMs: 0, totalFallbacks: 0 };
 					totalReqs += stats.requests;
 					totalTkn += stats.totalTokens;
+					totalFallbacks += stats.totalFallbacks || 0;
 					
 					document.getElementById(p + '-requests').innerText = stats.requests.toLocaleString();
 					document.getElementById(p + '-input-tokens').innerText = stats.promptTokens.toLocaleString();
@@ -914,6 +968,7 @@ export class AnalyticsPanel {
 
 				document.getElementById('total-requests').innerText = totalReqs.toLocaleString();
 				document.getElementById('total-tokens').innerText = totalTkn.toLocaleString();
+				document.getElementById('total-fallbacks').innerText = totalFallbacks.toLocaleString();
 
 				// Update models breakdown table
 				const modelsSection = document.getElementById('models-section');
@@ -932,12 +987,14 @@ export class AnalyticsPanel {
 					
 					sortedModels.forEach(m => {
 						const savings = m.commercialCost - m.actualCost;
+						const avgLatency = m.totalLatencyMs && m.requests ? (m.totalLatencyMs / m.requests / 1000).toFixed(2) + 's' : 'N/A';
 						tableHtml += \`
 							<tr>
 								<td style="font-weight: 500;">\${m.displayName || m.modelId}</td>
 								<td><span class="badge-provider \${m.provider.toLowerCase()}">\${m.provider}</span></td>
 								<td>\${m.requests}</td>
 								<td>\${m.totalTokens.toLocaleString()}</td>
+								<td>\${avgLatency}</td>
 								<td>$\${m.commercialCost.toFixed(4)}</td>
 								<td class="cost-actual">\${m.actualCost > 0 ? '$' + m.actualCost.toFixed(4) : 'Free ($0.00)'}</td>
 								<td class="cost-saving" style="font-weight: 600;">$\${savings.toFixed(4)}</td>

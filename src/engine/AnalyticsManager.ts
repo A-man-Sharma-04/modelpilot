@@ -6,6 +6,8 @@ export interface ProviderStats {
 	promptTokens: number;
 	completionTokens: number;
 	totalTokens: number;
+	totalLatencyMs: number;
+	totalFallbacks: number;
 }
 
 export interface ModelStats {
@@ -18,6 +20,16 @@ export interface ModelStats {
 	totalTokens: number;
 	commercialCost: number; // USD cost if run on paid APIs
 	actualCost: number;     // USD actual cost charged (0 if free)
+	totalLatencyMs: number;
+}
+
+export interface FineTuningRecord {
+	timestamp: string;
+	modelId: string;
+	provider: string;
+	messages: { role: string; content: string }[];
+	response: string;
+	latencyMs: number;
 }
 
 export interface AnalyticsData {
@@ -25,11 +37,14 @@ export interface AnalyticsData {
 		nvidia: ProviderStats;
 		groq: ProviderStats;
 		openrouter: ProviderStats;
+		cerebras: ProviderStats;
+		google: ProviderStats;
 		[key: string]: ProviderStats;
 	};
 	models: {
 		[modelId: string]: ModelStats;
 	};
+	fineTuningData?: FineTuningRecord[];
 }
 
 const GLOBAL_STATE_KEY = 'modelpilot.analytics';
@@ -39,6 +54,8 @@ const INITIAL_STATS = (): ProviderStats => ({
 	promptTokens: 0,
 	completionTokens: 0,
 	totalTokens: 0,
+	totalLatencyMs: 0,
+	totalFallbacks: 0,
 });
 
 export class AnalyticsManager {
@@ -58,18 +75,32 @@ export class AnalyticsManager {
 				google: INITIAL_STATS(),
 			},
 			models: {},
+			fineTuningData: [],
 		};
 
 		if (saved) {
 			const providers = { ...saved.providers };
+			
+			// Fill in missing properties for backward compatibility
+			for (const p of Object.keys(providers)) {
+				if (providers[p].totalLatencyMs === undefined) {
+					providers[p].totalLatencyMs = 0;
+				}
+				if (providers[p].totalFallbacks === undefined) {
+					providers[p].totalFallbacks = 0;
+				}
+			}
+
 			if (!providers.nvidia) { providers.nvidia = INITIAL_STATS(); }
 			if (!providers.groq) { providers.groq = INITIAL_STATS(); }
 			if (!providers.openrouter) { providers.openrouter = INITIAL_STATS(); }
 			if (!providers.cerebras) { providers.cerebras = INITIAL_STATS(); }
 			if (!providers.google) { providers.google = INITIAL_STATS(); }
+
 			return {
 				providers,
 				models: saved.models || {},
+				fineTuningData: saved.fineTuningData || [],
 			};
 		}
 
@@ -81,6 +112,10 @@ export class AnalyticsManager {
 		modelId: string,
 		promptTokens: number,
 		completionTokens: number,
+		latencyMs = 0,
+		fallbackCount = 0,
+		chatMessages?: { role: string; content: string }[],
+		responseContent?: string
 	): Promise<AnalyticsData> {
 		const data = this.getData();
 		const name = providerName.toLowerCase();
@@ -93,6 +128,8 @@ export class AnalyticsManager {
 		data.providers[name].promptTokens += promptTokens;
 		data.providers[name].completionTokens += completionTokens;
 		data.providers[name].totalTokens += promptTokens + completionTokens;
+		data.providers[name].totalLatencyMs = (data.providers[name].totalLatencyMs || 0) + latencyMs;
+		data.providers[name].totalFallbacks = (data.providers[name].totalFallbacks || 0) + fallbackCount;
 
 		// Calculate cost savings based on specific model pricing
 		const profile = getModelProfile(providerName, modelId);
@@ -133,6 +170,7 @@ export class AnalyticsManager {
 				totalTokens: 0,
 				commercialCost: 0,
 				actualCost: 0,
+				totalLatencyMs: 0,
 			};
 		}
 
@@ -143,6 +181,34 @@ export class AnalyticsManager {
 		mStats.totalTokens += promptTokens + completionTokens;
 		mStats.commercialCost += commercialCost;
 		mStats.actualCost += actualCost;
+		mStats.totalLatencyMs = (mStats.totalLatencyMs || 0) + latencyMs;
+
+		// Record fine-tuning prompt-response pair
+		if (chatMessages && chatMessages.length > 0 && responseContent) {
+			if (!data.fineTuningData) {
+				data.fineTuningData = [];
+			}
+
+			// Clean messages to simple format for fine-tuning
+			const simplifiedMessages = chatMessages.map(m => ({
+				role: String(m.role),
+				content: String(m.content)
+			}));
+
+			data.fineTuningData.push({
+				timestamp: new Date().toISOString(),
+				modelId,
+				provider: providerName,
+				messages: simplifiedMessages,
+				response: responseContent,
+				latencyMs
+			});
+
+			// Cap fine-tuning records to avoid blowing up VS Code global storage limits
+			if (data.fineTuningData.length > 1000) {
+				data.fineTuningData = data.fineTuningData.slice(-1000);
+			}
+		}
 
 		await this.globalState.update(GLOBAL_STATE_KEY, data);
 		this.onDidChangeEmitter.fire(data);
@@ -159,6 +225,7 @@ export class AnalyticsManager {
 				google: INITIAL_STATS(),
 			},
 			models: {},
+			fineTuningData: [],
 		};
 		await this.globalState.update(GLOBAL_STATE_KEY, freshData);
 		this.onDidChangeEmitter.fire(freshData);

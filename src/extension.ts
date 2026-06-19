@@ -35,7 +35,10 @@ import { ChatResult } from './providers/IProvider';
 async function recordUsage(
 	chatResult: ChatResult,
 	inputMessages: Message[],
-	globalState?: vscode.Memento
+	globalState?: vscode.Memento,
+	latencyMs = 0,
+	fallbackCount = 0,
+	responseContent?: string
 ) {
 	if (!globalState) {
 		return;
@@ -59,7 +62,16 @@ async function recordUsage(
 	}
 
 	const am = new AnalyticsManager(globalState);
-	await am.recordRequest(provider, modelId, promptTokens, completionTokens);
+	await am.recordRequest(
+		provider,
+		modelId,
+		promptTokens,
+		completionTokens,
+		latencyMs,
+		fallbackCount,
+		inputMessages,
+		responseContent || chatResult.content
+	);
 }
 
 let globalExpertProfile = DEFAULT_EXPERT_ID;
@@ -624,6 +636,8 @@ Respond ONLY with a JSON object in this format (no markdown blocks, no extra tex
 User Prompt: "${request.prompt.replace(/"/g, '\\"')}"
 ${classificationContext}`;
 
+				const classificationStart = Date.now();
+				let classificationFallbacks = 0;
 				const classificationResult = await router.route(
 					[classificationModel],
 					[
@@ -635,6 +649,9 @@ ${classificationContext}`;
 						stream: false,
 						maxTokens: 100,
 						timeout: 10000
+					},
+					() => {
+						classificationFallbacks++;
 					}
 				);
 
@@ -643,7 +660,8 @@ ${classificationContext}`;
 						{ role: 'system', content: 'You are an intent classifier. Respond ONLY with the requested JSON.' },
 						{ role: 'user', content: classificationPrompt }
 					];
-					await recordUsage(classificationResult, classificationMessages, globalState);
+					const classificationLatency = Date.now() - classificationStart;
+					await recordUsage(classificationResult, classificationMessages, globalState, classificationLatency, classificationFallbacks);
 				}
 
 				const parsed = JSON.parse(classificationResult.content.trim());
@@ -942,6 +960,8 @@ ${classificationContext}`;
 			let insideCodeBlock = false;
 			let backtickCount = 0;
 
+			const startTime = Date.now();
+			let fallbackCount = 0;
 			const chatResult = await router.route(
 				recs,
 				apiMessages,
@@ -988,12 +1008,14 @@ ${classificationContext}`;
 					timeout: useTools ? 60000 : 10000,
 				},
 				(from, to, reason) => {
+					fallbackCount++;
 					response.progress(`Switching: ${from} → ${to} (${reason})`);
 				}
 			);
 
 			if (chatResult) {
-				await recordUsage(chatResult, apiMessages, globalState);
+				const latencyMs = Date.now() - startTime;
+				await recordUsage(chatResult, apiMessages, globalState, latencyMs, fallbackCount);
 			}
 
 			const assistantText = chatResult.content;

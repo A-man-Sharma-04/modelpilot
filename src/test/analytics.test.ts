@@ -35,11 +35,15 @@ suite('ModelPilot Analytics & Savings Panel Tests', () => {
 
 	test('AnalyticsManager initial state', () => {
 		const data = manager.getData();
-				assert.strictEqual(data.providers.nvidia.requests, 0);
+		assert.strictEqual(data.providers.nvidia.requests, 0);
+		assert.strictEqual(data.providers.nvidia.totalLatencyMs, 0);
+		assert.strictEqual(data.providers.nvidia.totalFallbacks, 0);
 		assert.strictEqual(data.providers.groq.requests, 0);
 		assert.strictEqual(data.providers.openrouter.requests, 0);
 		assert.strictEqual(data.providers.cerebras.requests, 0);
 		assert.strictEqual(data.providers.google.requests, 0);
+		assert.ok(Array.isArray(data.fineTuningData));
+		assert.strictEqual(data.fineTuningData!.length, 0);
 		assert.strictEqual(manager.calculateSavings(data), 0.0);
 		assert.strictEqual(manager.getSavingsString(data), '$0.00');
 	});
@@ -96,13 +100,21 @@ suite('ModelPilot Analytics & Savings Panel Tests', () => {
 		// 5. Record Google request with 'gemini-2.5-pro'
 		// Input rate: $1.25/M, Output rate: $5.00/M
 		// 1M input + 1M output -> Commercial cost: $1.25 + $5.00 = $6.25. Actual cost: $0.00 (Google is free provider).
-		data = await manager.recordRequest('google', 'gemini-2.5-pro', 1000000, 1000000);
+		data = await manager.recordRequest('google', 'gemini-2.5-pro', 1000000, 1000000, 1200, 3, [{ role: 'user', content: 'test prompt' }], 'test response');
 		
 		const mStats5 = data.models['gemini-2.5-pro'];
 		assert.ok(mStats5);
 		assert.strictEqual(mStats5.commercialCost, 6.25);
 		assert.strictEqual(mStats5.actualCost, 0.00);
+		assert.strictEqual(mStats5.totalLatencyMs, 1200);
 		assert.strictEqual(data.providers.google.requests, 1);
+		assert.strictEqual(data.providers.google.totalLatencyMs, 1200);
+		assert.strictEqual(data.providers.google.totalFallbacks, 3);
+		
+		assert.ok(data.fineTuningData);
+		assert.strictEqual(data.fineTuningData!.length, 1);
+		assert.strictEqual(data.fineTuningData![0].modelId, 'gemini-2.5-pro');
+		assert.strictEqual(data.fineTuningData![0].response, 'test response');
 
 		const savings = manager.calculateSavings(data);
 		assert.ok(Math.abs(savings - 15.24) < 0.0001, `Expected savings to be close to 15.24, got ${savings}`);
@@ -121,17 +133,20 @@ suite('ModelPilot Analytics & Savings Panel Tests', () => {
 	});
 
 	test('AnalyticsManager resets statistics correctly', async () => {
-		await manager.recordRequest('groq', 'gemma2-9b-it', 100, 200);
+		await manager.recordRequest('groq', 'gemma2-9b-it', 100, 200, 200, 0, [{ role: 'user', content: 'hey' }], 'yo');
 		await manager.recordRequest('nvidia', 'deepseek-ai/deepseek-v4-pro', 50, 50);
 		let data = manager.getData();
 		assert.ok(data.providers.groq.requests > 0);
+		assert.strictEqual(data.fineTuningData!.length, 1);
 		assert.ok(Object.keys(data.models).length > 0);
 
 		data = await manager.reset();
 		assert.strictEqual(data.providers.groq.requests, 0);
+		assert.strictEqual(data.providers.groq.totalLatencyMs, 0);
 		assert.strictEqual(data.providers.nvidia.requests, 0);
 		assert.strictEqual(data.providers.cerebras.requests, 0);
 		assert.strictEqual(data.providers.google.requests, 0);
+		assert.strictEqual(data.fineTuningData!.length, 0);
 		assert.strictEqual(Object.keys(data.models).length, 0);
 		assert.strictEqual(manager.calculateSavings(data), 0.0);
 	});
