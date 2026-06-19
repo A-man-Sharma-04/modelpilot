@@ -132,6 +132,10 @@ export abstract class OpenAICompatibleProvider implements IProvider {
 	private static activeKeyIndices = new Map<string, number>();
 	private static providerKeyCooldowns = new Map<string, Map<string, number>>();
 
+	public static getActiveKeyIndex(providerName: string): number {
+		return OpenAICompatibleProvider.activeKeyIndices.get(providerName) ?? 0;
+	}
+
 	private get activeKeyIndex(): number {
 		return OpenAICompatibleProvider.activeKeyIndices.get(this.name) ?? 0;
 	}

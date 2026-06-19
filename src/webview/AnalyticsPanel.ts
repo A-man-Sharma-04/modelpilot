@@ -156,6 +156,7 @@ export class AnalyticsPanel {
 			{
 				totalKeys: number;
 				cooldowns: { keyMask: string; remainingMs: number }[];
+				activeKeyMask?: string;
 			}
 		> = {};
 
@@ -175,9 +176,23 @@ export class AnalyticsPanel {
 				};
 			});
 
+			const activeIndex = OpenAICompatibleProvider.getActiveKeyIndex(p);
+			let activeKeyMask: string | undefined = undefined;
+			if (activeKeys.length > 0) {
+				const idx = activeIndex % activeKeys.length;
+				const activeKey = activeKeys[idx];
+				if (activeKey) {
+					const mask = activeKey.length > 8 
+						? `${activeKey.slice(0, 4)}...${activeKey.slice(-4)}`
+						: '...';
+					activeKeyMask = `Key ${idx + 1} (${mask})`;
+				}
+			}
+
 			status[p] = {
 				totalKeys: activeKeys.length,
 				cooldowns: cooldownsMapped,
+				activeKeyMask
 			};
 		}
 		return status;
@@ -434,6 +449,29 @@ export class AnalyticsPanel {
 			font-weight: 500;
 		}
 
+		/* Active Key telemetry */
+		.active-key-row {
+			display: flex;
+			justify-content: space-between;
+			align-items: center;
+			font-size: 0.8rem;
+			background: rgba(255, 255, 255, 0.03);
+			padding: 6px 12px;
+			border-radius: 8px;
+			border: 1px dashed var(--border-color);
+			margin-top: 4px;
+		}
+
+		.active-key-label {
+			color: var(--text-secondary);
+		}
+
+		.active-key-value {
+			font-family: monospace;
+			font-weight: 600;
+			color: var(--accent-primary);
+		}
+
 		/* Token stats breakdown */
 		.stats-table {
 			display: flex;
@@ -647,6 +685,11 @@ export class AnalyticsPanel {
 					</div>
 				</div>
 
+				<div class="active-key-row" id="nvidia-active-key" style="display: none;">
+					<span class="active-key-label">Active Key</span>
+					<span class="active-key-value" id="nvidia-active-key-val">N/A</span>
+				</div>
+
 				<div class="cooldown-list" id="nvidia-cooldowns" style="display: none;">
 					<!-- Dinamically filled -->
 				</div>
@@ -686,6 +729,11 @@ export class AnalyticsPanel {
 					<div class="meter-bar">
 						<div class="meter-fill unconfigured" id="groq-meter-fill"></div>
 					</div>
+				</div>
+
+				<div class="active-key-row" id="groq-active-key" style="display: none;">
+					<span class="active-key-label">Active Key</span>
+					<span class="active-key-value" id="groq-active-key-val">N/A</span>
 				</div>
 
 				<div class="cooldown-list" id="groq-cooldowns" style="display: none;">
@@ -729,6 +777,11 @@ export class AnalyticsPanel {
 					</div>
 				</div>
 
+				<div class="active-key-row" id="openrouter-active-key" style="display: none;">
+					<span class="active-key-label">Active Key</span>
+					<span class="active-key-value" id="openrouter-active-key-val">N/A</span>
+				</div>
+
 				<div class="cooldown-list" id="openrouter-cooldowns" style="display: none;">
 					<!-- Dinamically filled -->
 				</div>
@@ -770,6 +823,11 @@ export class AnalyticsPanel {
 					</div>
 				</div>
 
+				<div class="active-key-row" id="cerebras-active-key" style="display: none;">
+					<span class="active-key-label">Active Key</span>
+					<span class="active-key-value" id="cerebras-active-key-val">N/A</span>
+				</div>
+
 				<div class="cooldown-list" id="cerebras-cooldowns" style="display: none;">
 					<!-- Dinamically filled -->
 				</div>
@@ -809,6 +867,11 @@ export class AnalyticsPanel {
 					<div class="meter-bar">
 						<div class="meter-fill unconfigured" id="google-meter-fill"></div>
 					</div>
+				</div>
+
+				<div class="active-key-row" id="google-active-key" style="display: none;">
+					<span class="active-key-label">Active Key</span>
+					<span class="active-key-value" id="google-active-key-val">N/A</span>
 				</div>
 
 				<div class="cooldown-list" id="google-cooldowns" style="display: none;">
@@ -961,6 +1024,18 @@ export class AnalyticsPanel {
 						const percentage = (activeCount / statusInfo.totalKeys) * 100;
 						fillEl.style.width = percentage + '%';
 						pulseEl.style.backgroundColor = 'var(--warning)';
+					}
+
+					// Update Active Key Display
+					const activeKeyEl = document.getElementById(p + '-active-key');
+					const activeKeyValEl = document.getElementById(p + '-active-key-val');
+					if (activeKeyEl && activeKeyValEl) {
+						if (statusInfo.activeKeyMask && statusInfo.totalKeys > 0) {
+							activeKeyEl.style.display = 'flex';
+							activeKeyValEl.innerText = statusInfo.activeKeyMask;
+						} else {
+							activeKeyEl.style.display = 'none';
+						}
 					}
 
 					renderCooldowns(p);
