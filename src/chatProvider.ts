@@ -115,7 +115,7 @@ export class ModelPilotChatProvider implements vscode.LanguageModelChatProvider<
 				maxInputTokens: safeInput,
 				maxOutputTokens: model.maxOutputTokens || 4096,
 				capabilities: {
-					toolCalling: model.supportsNativeTools === true
+					toolCalling: true
 				}
 			});
 		}
