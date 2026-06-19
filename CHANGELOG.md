@@ -1,5 +1,45 @@
 # Changelog
 
+## 0.9.0
+
+### Added
+- **Google AI Studio Direct Provider**: Integrates Gemini 2.5 Pro (1M context) and Gemini 2.5 Flash as direct providers, bypassing OpenRouter and running completions directly with the user's Google API key.
+- **Enhanced Usage Stats**: Measures request latency (average latency per model) and tracks fallback events in real-time across providers/models.
+- **Fine-Tuning JSONL Export**: Collects successful chat turns and exports them in the standard OpenAI JSONL format for fine-tuning.
+- **Key Rotation Telemetry**: Displays the currently active masked API key (e.g. `Key 1 (sk-...3a9f)`) in real-time under each provider's safety meter.
+
+## 0.8.0
+
+### Added
+- **Native VS Code Language Model Provider**: Registers ModelPilot under the VS Code chat participant framework as a native `vscode.LanguageModelChatProvider`, allowing users to select ModelPilot's routed models directly in VS Code's native model picker next to the chat input box.
+
+## 0.7.1
+
+### Added
+- **Cerebras Support in Analytics**: Fully integrated Cerebras usage statistics, token counts, and cost-savings telemetry into the analytics dashboard.
+
+## 0.7.0
+
+### Changed
+- **Direct Workspace Modification**: Optimized agent behaviour to directly write, modify, and create workspace files using tools rather than outputting raw code blocks in the chat response. Added automatic interception of code blocks.
+
+## 0.6.0
+
+### Added
+- **Cerebras Provider Integration**: Support for the Cerebras Llama-3.1 inference engine for sub-second, ultra-low-latency completions.
+- **Cooldown-Aware Retries**: Automatically reorder and bypass providers in rate limit cooldown, waiting for the shortest cooldown if all keys are temporarily blocked.
+
+## 0.5.3
+
+### Added
+- **Token & Cost Analytics Dashboard**: A glassmorphic webview dashboard showing real-time token tracking, net cost savings relative to paid/commercial APIs, and a visual "Safety Meter" representing healthy vs rate-limited API key states with real-time cooldown countdowns.
+
+## 0.5.2
+
+### Added
+- **New Model Profiles & Expert Scoring**: Added new model profiles and adjusted capability weights across expert profiles for more reliable routing.
+- **Reliability Instructions**: Embedded model reliability guidelines into the system prompts.
+
 ## 0.5.1
 
 ### Added
