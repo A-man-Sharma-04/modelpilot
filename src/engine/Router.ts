@@ -37,9 +37,9 @@ export class Router {
 		const totalInputTokens = estimateMessagesTokens(messages);
 		let filteredRecs = [...candidateRecs];
 		if (totalInputTokens >= 6000) {
-			// Large input -> DeepSeek V4 Pro or models with 128k+ context length
+			// Large input -> DeepSeek R1 or models with 128k+ context length
 			filteredRecs = candidateRecs.filter(rec => 
-				rec.model.id.includes('deepseek-v4-pro') || rec.model.contextLength >= 128000
+				rec.model.id.includes('deepseek-r1') || rec.model.contextLength >= 128000
 			);
 		} else if (totalInputTokens >= 2000) {
 			// Medium input -> filter to models with 8k+ context length

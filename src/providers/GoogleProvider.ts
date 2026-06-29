@@ -1,11 +1,11 @@
-import { LiveModel, Message, Tool, ChatOptions, ChatResult } from './IProvider';
+import { LiveModel } from './IProvider';
 import { OpenAICompatibleProvider } from './OpenAICompatibleProvider';
 import { MODEL_PROFILES } from '../data/modelProfiles';
 
-const BASE_URL = 'https://api.cerebras.ai/v1';
+const BASE_URL = 'https://generativelanguage.googleapis.com/v1beta/openai';
 
-export class CerebrasProvider extends OpenAICompatibleProvider {
-	readonly name = 'cerebras';
+export class GoogleProvider extends OpenAICompatibleProvider {
+	readonly name = 'google';
 	readonly baseUrl = BASE_URL;
 
 	constructor(readonly apiKeys: string[]) {
@@ -42,7 +42,7 @@ export class CerebrasProvider extends OpenAICompatibleProvider {
 				throw new Error('Authentication failed (401/403). Please verify your API key.');
 			}
 			return MODEL_PROFILES
-				.filter(m => m.provider === 'cerebras')
+				.filter(m => m.provider === 'google')
 				.map(m => ({ id: m.id, available: true }));
 		}
 
@@ -51,14 +51,14 @@ export class CerebrasProvider extends OpenAICompatibleProvider {
 			const liveIds = new Set(data.data.map((m: { id: string }) => m.id));
 
 			return MODEL_PROFILES
-				.filter(m => m.provider === 'cerebras')
+				.filter(m => m.provider === 'google')
 				.map(m => ({
 					id: m.id,
 					available: liveIds.has(m.id),
 				}));
 		} catch {
 			return MODEL_PROFILES
-				.filter(m => m.provider === 'cerebras')
+				.filter(m => m.provider === 'google')
 				.map(m => ({ id: m.id, available: true }));
 		}
 	}

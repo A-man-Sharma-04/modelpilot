@@ -2,10 +2,14 @@ import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import { exec } from 'child_process';
+
+let availableSystemTools: string[] = [];
 import { NvidiaProvider } from './providers/NvidiaProvider';
 import { OpenRouterProvider } from './providers/OpenRouterProvider';
 import { GroqProvider } from './providers/GroqProvider';
 import { CerebrasProvider } from './providers/CerebrasProvider';
+import { GoogleProvider } from './providers/GoogleProvider';
 import { ModelRegistry } from './registry/ModelRegistry';
 import { Recommender } from './engine/Recommender';
 import { Router } from './engine/Router';
@@ -21,18 +25,23 @@ import {
 	cleanJsonString,
 	cleanToolCallTags,
 	parseTextToolCalls,
-	getSafeStreamLength
+	getSafeStreamLength,
+	extractCodeBlocksWithPaths
 } from './engine/chatHelpers';
 import { decompose, inferCategory, estimateTokens, estimateMessagesTokens } from './engine/TaskDecomposer';
 import { SYSTEM_PROMPT, MODE_PROMPTS, buildWorkspaceContext } from './participant/systemPrompt';
 import { AnalyticsManager } from './engine/AnalyticsManager';
 import { AnalyticsPanel } from './webview/AnalyticsPanel';
+import { ModelPilotChatProvider } from './chatProvider';
 import { ChatResult } from './providers/IProvider';
 
 async function recordUsage(
 	chatResult: ChatResult,
 	inputMessages: Message[],
-	globalState?: vscode.Memento
+	globalState?: vscode.Memento,
+	latencyMs = 0,
+	fallbackCount = 0,
+	responseContent?: string
 ) {
 	if (!globalState) {
 		return;
@@ -56,7 +65,16 @@ async function recordUsage(
 	}
 
 	const am = new AnalyticsManager(globalState);
-	await am.recordRequest(provider, modelId, promptTokens, completionTokens);
+	await am.recordRequest(
+		provider,
+		modelId,
+		promptTokens,
+		completionTokens,
+		latencyMs,
+		fallbackCount,
+		inputMessages,
+		responseContent || chatResult.content
+	);
 }
 
 let globalExpertProfile = DEFAULT_EXPERT_ID;
@@ -562,13 +580,11 @@ export async function executeSingleTask(
 	}
 
 	let isChitchat = false;
-	if (operationMode === 'ask') {
-		isChitchat = true;
-	} else if (operationMode === 'plan') {
+	if (operationMode === 'plan') {
 		isChitchat = false;
 	} else if (operationMode === 'agent') {
 		isChitchat = false;
-	} else if (request.command && request.command !== 'general') {
+	} else if (request.command && request.command !== 'general' && request.command !== 'ask') {
 		isChitchat = false;
 	} else {
 		isChitchat = isGreetingOrChitchat(request.prompt);
@@ -588,6 +604,7 @@ export async function executeSingleTask(
 					new OpenRouterProvider(keys.openrouter),
 					new GroqProvider(keys.groq),
 					new CerebrasProvider(keys.cerebras),
+					new GoogleProvider(keys.google),
 				];
 				const router = new Router(providers);
 
@@ -620,6 +637,8 @@ Respond ONLY with a JSON object in this format (no markdown blocks, no extra tex
 User Prompt: "${request.prompt.replace(/"/g, '\\"')}"
 ${classificationContext}`;
 
+				const classificationStart = Date.now();
+				let classificationFallbacks = 0;
 				const classificationResult = await router.route(
 					[classificationModel],
 					[
@@ -631,6 +650,9 @@ ${classificationContext}`;
 						stream: false,
 						maxTokens: 100,
 						timeout: 10000
+					},
+					() => {
+						classificationFallbacks++;
 					}
 				);
 
@@ -639,7 +661,8 @@ ${classificationContext}`;
 						{ role: 'system', content: 'You are an intent classifier. Respond ONLY with the requested JSON.' },
 						{ role: 'user', content: classificationPrompt }
 					];
-					await recordUsage(classificationResult, classificationMessages, globalState);
+					const classificationLatency = Date.now() - classificationStart;
+					await recordUsage(classificationResult, classificationMessages, globalState, classificationLatency, classificationFallbacks);
 				}
 
 				const parsed = JSON.parse(classificationResult.content.trim());
@@ -663,13 +686,22 @@ ${classificationContext}`;
 		}
 	}
 
+	// Override: prevent 'ask' mode from disabling tools when the prompt contains code-action signals
+	if (operationMode === 'ask') {
+		const codeActionSignals = /\b(create|write|build|implement|fix|refactor|edit|generate|make|add|set\s*up|setup|scaffold|initialize|init|modify|update|delete|remove|rename|move|install|configure|deploy|migrate|convert|transform|port|rewrite)\b/i;
+		if (codeActionSignals.test(request.prompt)) {
+			operationMode = 'agent';
+			isChitchat = false;
+		}
+	}
+
 	let useTools = !isChitchat;
 	if (operationMode === 'plan') {
 		useTools = false;
 	} else if (operationMode === 'agent') {
 		useTools = true;
 	} else if (operationMode === 'ask') {
-		useTools = false;
+		useTools = !isChitchat;
 	}
 	recs = isChitchat ? recommender.recommendForSpeed(10) : recommender.recommend(expertId, 10, initialTokensEstimate);
 
@@ -707,6 +739,7 @@ ${classificationContext}`;
 		shell: shellPath,
 		platform: osPlatformForCtx,
 		projectStack,
+		availableTools: availableSystemTools,
 		activeFile,
 		activeLanguage,
 		workspaceName,
@@ -817,6 +850,7 @@ ${classificationContext}`;
 		new OpenRouterProvider(keys.openrouter),
 		new GroqProvider(keys.groq),
 		new CerebrasProvider(keys.cerebras),
+		new GoogleProvider(keys.google),
 	];
 	const router = new Router(providers);
 
@@ -864,6 +898,8 @@ ${classificationContext}`;
 
 				if (operationMode === 'agent') {
 					systemPromptParts.push(`[Mode Context: Agent Mode]\nYou are operating in Agent Mode. You are an autonomous coding agent. Perform the task by using the provided tools to read, write, create, and delete files, or run terminal commands.`);
+				} else if (operationMode === 'ask') {
+					systemPromptParts.push(`[Mode Context: Ask Mode]\nYou are operating in Ask Mode. Your primary goal is to answer the user's question. You have access to tools to inspect the workspace or system (e.g. read files, list directories, search, or run non-destructive commands). Use them to gather information to answer the question. Avoid modifying files or writing new code to the workspace unless the user explicitly asks you to do so.`);
 				}
 
 				currentSystemPrompt = systemPromptParts.join('\n\n');
@@ -925,7 +961,11 @@ ${classificationContext}`;
 
 			let streamedTextLength = 0;
 			let accumulatedText = '';
+			let insideCodeBlock = false;
+			let backtickCount = 0;
 
+			const startTime = Date.now();
+			let fallbackCount = 0;
 			const chatResult = await router.route(
 				recs,
 				apiMessages,
@@ -935,10 +975,36 @@ ${classificationContext}`;
 					onChunk: (text) => {
 						accumulatedText += text;
 						const safeLength = getSafeStreamLength(accumulatedText);
-						if (safeLength > streamedTextLength) {
-							const cleanTextToStream = accumulatedText.slice(streamedTextLength, safeLength);
-							response.markdown(cleanTextToStream);
-							streamedTextLength = safeLength;
+
+						if (useTools) {
+							// In agent mode, suppress fenced code blocks from streaming to chat.
+							// They will be intercepted and auto-written as files after the response completes.
+							const textSoFar = accumulatedText.slice(0, safeLength);
+							const tripleBacktickMatches = textSoFar.match(/```/g);
+							const currentBacktickCount = tripleBacktickMatches ? tripleBacktickMatches.length : 0;
+							insideCodeBlock = currentBacktickCount % 2 !== 0;
+
+							if (!insideCodeBlock && currentBacktickCount === backtickCount) {
+								// Not inside a code block, no new code blocks closed — stream normally
+								if (safeLength > streamedTextLength) {
+									const cleanTextToStream = accumulatedText.slice(streamedTextLength, safeLength);
+									response.markdown(cleanTextToStream);
+									streamedTextLength = safeLength;
+								}
+							} else if (!insideCodeBlock && currentBacktickCount > backtickCount) {
+								// A code block just closed — do NOT stream it (it will be intercepted later)
+								// Advance streamedTextLength to skip past the code block
+								streamedTextLength = safeLength;
+							}
+							// If inside a code block, hold — don't stream anything
+							backtickCount = currentBacktickCount;
+						} else {
+							// Non-agent mode: stream everything normally
+							if (safeLength > streamedTextLength) {
+								const cleanTextToStream = accumulatedText.slice(streamedTextLength, safeLength);
+								response.markdown(cleanTextToStream);
+								streamedTextLength = safeLength;
+							}
 						}
 					},
 					maxTokens: 4096,
@@ -946,12 +1012,14 @@ ${classificationContext}`;
 					timeout: useTools ? 60000 : 10000,
 				},
 				(from, to, reason) => {
+					fallbackCount++;
 					response.progress(`Switching: ${from} → ${to} (${reason})`);
 				}
 			);
 
 			if (chatResult) {
-				await recordUsage(chatResult, apiMessages, globalState);
+				const latencyMs = Date.now() - startTime;
+				await recordUsage(chatResult, apiMessages, globalState, latencyMs, fallbackCount);
 			}
 
 			const assistantText = chatResult.content;
@@ -971,6 +1039,37 @@ ${classificationContext}`;
 			apiMessages.push(assistantMessage);
 
 			if (toolCalls.length === 0) {
+				// The model returned text with no tool calls.
+				// If we're in agent mode, check for code blocks that should have been file operations.
+				if (useTools) {
+					const interceptedBlocks = extractCodeBlocksWithPaths(assistantText);
+
+					if (interceptedBlocks.length > 0) {
+						// Auto-create files from intercepted code blocks
+						for (const block of interceptedBlocks) {
+							try {
+								response.progress(`Auto-creating file: ${block.path}`);
+								await AgentExecutor.execute('create_file', { path: block.path, content: block.content }, agentCwd);
+								response.markdown(`\n✅ Created **${block.path}**\n`);
+							} catch (err) {
+								response.markdown(`\n⚠️ Failed to create **${block.path}**: ${err instanceof Error ? err.message : String(err)}\n`);
+							}
+						}
+						break;
+					}
+
+					// Check if the response contains ANY fenced code blocks (even without detectable paths)
+					const hasCodeBlocks = /```\w*\s*\n[\s\S]*?```/.test(assistantText);
+					if (hasCodeBlocks && loopIteration < maxIterations) {
+						// Inject a correction and re-prompt (one attempt only)
+						apiMessages.push({
+							role: 'user',
+							content: '[CORRECTION] You printed code in the chat response using fenced code blocks instead of using the create_file or write_file tools. This is not acceptable. You MUST use the file tools to write code into the workspace. Re-do your previous response — use create_file or write_file for every code file. Do NOT print any code in the chat.'
+						});
+						// Don't break — let the loop re-prompt the model
+						continue;
+					}
+				}
 				break;
 			}
 
@@ -1176,6 +1275,44 @@ ${classificationContext}`;
 }
 
 export function activate(context: vscode.ExtensionContext) {
+	// Detect available system tools asynchronously in the background after activation
+	setTimeout(() => {
+		const commonTools = [
+			'git', 'docker', 'docker-compose', 'npm', 'node', 'python', 'python3',
+			'pip', 'pip3', 'gcc', 'g++', 'make', 'cmake', 'curl', 'wget',
+			'cargo', 'go', 'rustc', 'java', 'javac'
+		];
+		const isWin = os.platform() === 'win32';
+		const checkCmd = isWin
+			? `where ${commonTools.join(' ')}`
+			: `command -v ${commonTools.join(' ')}`;
+
+		exec(checkCmd, (error, stdout) => {
+			if (stdout) {
+				const paths = stdout.split(/\r?\n/).map(p => p.trim()).filter(Boolean);
+				for (const p of paths) {
+					const baseName = path.basename(p).toLowerCase().replace(/\.exe$/, '');
+					if (commonTools.includes(baseName)) {
+						if (!availableSystemTools.includes(baseName)) {
+							availableSystemTools.push(baseName);
+						}
+					} else {
+						for (const tool of commonTools) {
+							if (baseName.includes(tool)) {
+								if (!availableSystemTools.includes(tool)) {
+									availableSystemTools.push(tool);
+								}
+								break;
+							}
+						}
+					}
+				}
+				availableSystemTools.sort();
+				console.log('ModelPilot: Detected available system tools:', availableSystemTools);
+			}
+		});
+	}, 100);
+
 	const sm = new SecretsManager(context.secrets);
 
 	const registry = new ModelRegistry();
@@ -1214,6 +1351,7 @@ export function activate(context: vscode.ExtensionContext) {
 					new OpenRouterProvider(keys.openrouter),
 					new GroqProvider(keys.groq),
 					new CerebrasProvider(keys.cerebras),
+					new GoogleProvider(keys.google),
 				];
 				await registry.refresh(providers);
 				return registry.getAvailable().length;
@@ -1225,6 +1363,19 @@ export function activate(context: vscode.ExtensionContext) {
 	}
 
 	refreshModels();
+
+	// Register Native Language Model Provider
+	const chatProvider = new ModelPilotChatProvider(registry, sm, analyticsManager, () => globalExpertProfile);
+	const lmProviderRegistration = vscode.lm.registerLanguageModelChatProvider('modelpilot', chatProvider);
+	context.subscriptions.push(lmProviderRegistration);
+
+	// Register Status Bar Item for Quick Chat Access
+	const chatStatusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 101);
+	chatStatusBarItem.command = 'modelpilot.newChat';
+	chatStatusBarItem.text = '$(comment-discussion) ModelPilot';
+	chatStatusBarItem.tooltip = 'Start a new ModelPilot chat session';
+	chatStatusBarItem.show();
+	context.subscriptions.push(chatStatusBarItem);
 
 	// Register Chat Participant
 	const handler: vscode.ChatRequestHandler = async (request, chatContext, response, token) => {
@@ -1268,8 +1419,13 @@ export function activate(context: vscode.ExtensionContext) {
 				},
 				{
 					label: 'Cerebras',
-					detail: 'Ultra-fast wafer-scale inference — Llama, GPT-OSS, GLM',
+					detail: 'Ultra-fast wafer-scale inference — Llama 3.1, Llama 3.3',
 					id: 'cerebras',
+				},
+				{
+					label: 'Google AI Studio',
+					detail: 'Free models: Gemini 2.5 Pro (1M context), Gemini 2.5 Flash',
+					id: 'google',
 				},
 			];
 

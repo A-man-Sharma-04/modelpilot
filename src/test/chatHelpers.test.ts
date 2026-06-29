@@ -8,7 +8,8 @@ import {
 	extractJsonObjects,
 	cleanToolCallTags,
 	parseTextToolCalls,
-	getSafeStreamLength
+	getSafeStreamLength,
+	extractCodeBlocksWithPaths
 } from '../engine/chatHelpers';
 
 suite('ModelPilot Chat Helpers Unit Tests', () => {
@@ -294,6 +295,102 @@ suite('ModelPilot Chat Helpers Unit Tests', () => {
 			assert.ok(ctxStr.includes('Shell: /bin/zsh'));
 			assert.ok(ctxStr.includes('Stack detected: Node.js, TypeScript'));
 			assert.ok(ctxStr.includes('Active file: src/extension.ts'));
+		});
+	});
+
+	suite('extractCodeBlocksWithPaths', () => {
+		test('should extract code block with JS comment file path on line 1', () => {
+			const text = 'Here is the file:\n```typescript\n// src/index.ts\nconsole.log("hello");\n```';
+			const blocks = extractCodeBlocksWithPaths(text);
+			assert.strictEqual(blocks.length, 1);
+			assert.strictEqual(blocks[0].path, 'src/index.ts');
+			assert.strictEqual(blocks[0].language, 'typescript');
+			assert.ok(blocks[0].content.includes('console.log'));
+			assert.ok(!blocks[0].content.includes('// src/index.ts'), 'Should strip the file path comment from content');
+		});
+
+		test('should extract code block with Python comment file path', () => {
+			const text = '```python\n# utils/helper.py\ndef greet():\n    print("hi")\n```';
+			const blocks = extractCodeBlocksWithPaths(text);
+			assert.strictEqual(blocks.length, 1);
+			assert.strictEqual(blocks[0].path, 'utils/helper.py');
+		});
+
+		test('should extract code block with SQL comment file path', () => {
+			const text = '```sql\n-- db/schema.sql\nCREATE TABLE users (id INT);\n```';
+			const blocks = extractCodeBlocksWithPaths(text);
+			assert.strictEqual(blocks.length, 1);
+			assert.strictEqual(blocks[0].path, 'db/schema.sql');
+		});
+
+		test('should extract code block with HTML comment file path', () => {
+			const text = '```html\n<!-- templates/index.html -->\n<div>Hello</div>\n```';
+			const blocks = extractCodeBlocksWithPaths(text);
+			assert.strictEqual(blocks.length, 1);
+			assert.strictEqual(blocks[0].path, 'templates/index.html');
+		});
+
+		test('should extract code block with C-style block comment file path', () => {
+			const text = '```c\n/* src/main.c */\nint main() { return 0; }\n```';
+			const blocks = extractCodeBlocksWithPaths(text);
+			assert.strictEqual(blocks.length, 1);
+			assert.strictEqual(blocks[0].path, 'src/main.c');
+		});
+
+		test('should extract code block with preceding **`path`**: pattern', () => {
+			const text = '**`src/app.js`**:\n```javascript\nconst app = express();\n```';
+			const blocks = extractCodeBlocksWithPaths(text);
+			assert.strictEqual(blocks.length, 1);
+			assert.strictEqual(blocks[0].path, 'src/app.js');
+		});
+
+		test('should extract code block with preceding backtick path pattern', () => {
+			const text = 'Create `config/settings.json`:\n```json\n{"debug": true}\n```';
+			const blocks = extractCodeBlocksWithPaths(text);
+			assert.strictEqual(blocks.length, 1);
+			assert.strictEqual(blocks[0].path, 'config/settings.json');
+		});
+
+		test('should extract code block with "File:" preceding pattern', () => {
+			const text = 'File: `src/utils.ts`:\n```typescript\nexport function add(a: number, b: number) { return a + b; }\n```';
+			const blocks = extractCodeBlocksWithPaths(text);
+			assert.strictEqual(blocks.length, 1);
+			assert.strictEqual(blocks[0].path, 'src/utils.ts');
+		});
+
+		test('should extract multiple code blocks with paths', () => {
+			const text = '```typescript\n// src/a.ts\nconst a = 1;\n```\n\nAnd:\n```typescript\n// src/b.ts\nconst b = 2;\n```';
+			const blocks = extractCodeBlocksWithPaths(text);
+			assert.strictEqual(blocks.length, 2);
+			assert.strictEqual(blocks[0].path, 'src/a.ts');
+			assert.strictEqual(blocks[1].path, 'src/b.ts');
+		});
+
+		test('should normalize paths by removing leading ./ or /', () => {
+			const text = '```javascript\n// ./src/index.js\nmodule.exports = {};\n```';
+			const blocks = extractCodeBlocksWithPaths(text);
+			assert.strictEqual(blocks.length, 1);
+			assert.strictEqual(blocks[0].path, 'src/index.js');
+		});
+
+		test('should return empty array when no file path is detectable', () => {
+			const text = '```python\nprint("hello world")\n```';
+			const blocks = extractCodeBlocksWithPaths(text);
+			assert.strictEqual(blocks.length, 0);
+		});
+
+		test('should return empty array for text with no code blocks', () => {
+			const text = 'Just some explanation about how to use the function.';
+			const blocks = extractCodeBlocksWithPaths(text);
+			assert.strictEqual(blocks.length, 0);
+		});
+
+		test('should handle File: prefix in comment line', () => {
+			const text = '```typescript\n// File: src/handler.ts\nexport class Handler {}\n```';
+			const blocks = extractCodeBlocksWithPaths(text);
+			assert.strictEqual(blocks.length, 1);
+			assert.strictEqual(blocks[0].path, 'src/handler.ts');
+			assert.ok(!blocks[0].content.includes('File:'), 'Should strip the File: comment from content');
 		});
 	});
 });

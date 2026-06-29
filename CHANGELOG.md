@@ -1,5 +1,38 @@
 # Changelog
 
+## 0.7.0
+
+### Added
+- **Native VS Code Language Model Provider**: Registers ModelPilot as a native `vscode.LanguageModelChatProvider`, allowing users to select ModelPilot's routed models directly in VS Code's native model picker (dropdown next to the chat input). Set the model family to `'modelpilot'` and enabled `toolCalling: true` capability definitions for seamless compatibility.
+- **Google AI Studio Direct Provider**: Integrates Gemini 2.5 Pro (1M context) and Gemini 2.5 Flash as direct providers, running completions directly with the user's Google API key.
+- **Proactive Tool Use in Ask Mode**: Enabled tool usage for non-chitchat queries under `/ask` mode, allowing the model to inspect the system and workspace to answer questions.
+- **Quick Chat Access**: Added a status bar button `(💬 ModelPilot)` and a default keyboard shortcut (`Ctrl+Alt+M` / `Cmd+Alt+M`) to start a new ModelPilot chat session instantly.
+- **Startup Tool Detection**: Automatically detects available system tools at startup and injects them into the `[WORKSPACE CONTEXT]` block.
+- **Enhanced Usage Stats & Telemetry**: Measures average request latency per model and tracks fallback events in real-time. Displays the currently active masked API key (e.g. `Key 1 (sk-...3a9f)`) under each provider's safety meter on the Token & Cost Analytics dashboard.
+- **Fine-Tuning JSONL Export**: Added a button on the analytics dashboard to export successful chat turns in the standard OpenAI JSONL format for model fine-tuning.
+- **Real Free Models**: Cleaned up mock/simulated models and added real, free, high-performance models (DeepSeek R1 and Qwen 2.5 Coder 32B) across NVIDIA NIM, Groq, and OpenRouter.
+
+### Changed
+- **Direct Workspace Modification**: Optimized agent behavior to directly write, modify, and create workspace files using tools rather than outputting raw code blocks in the chat response. Added automatic interception of code blocks.
+- **Optimized Activation Time**: Deferred and batched system tool detection to reduce extension startup activation latency back to the 10-20ms range.
+
+## 0.6.0
+
+### Added
+- **Cerebras Provider Integration**: Support for the Cerebras Llama-3.1 inference engine for sub-second, ultra-low-latency completions.
+- **Cooldown-Aware Retries**: Automatically reorder and bypass providers in rate limit cooldown, waiting for the shortest cooldown if all keys are temporarily blocked.
+
+## 0.5.3
+
+### Added
+- **Token & Cost Analytics Dashboard**: A glassmorphic webview dashboard showing real-time token tracking, net cost savings relative to paid/commercial APIs, and a visual "Safety Meter" representing healthy vs rate-limited API key states with real-time cooldown countdowns.
+
+## 0.5.2
+
+### Added
+- **New Model Profiles & Expert Scoring**: Added new model profiles and adjusted capability weights across expert profiles for more reliable routing.
+- **Reliability Instructions**: Embedded model reliability guidelines into the system prompts.
+
 ## 0.5.1
 
 ### Added

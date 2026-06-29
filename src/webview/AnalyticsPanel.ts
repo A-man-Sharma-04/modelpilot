@@ -82,6 +82,46 @@ export class AnalyticsPanel {
 					case 'refresh':
 						this.refresh();
 						break;
+					case 'exportFineTuning':
+						try {
+							const ftData = this.analyticsManager.getData();
+							if (!ftData.fineTuningData || ftData.fineTuningData.length === 0) {
+								vscode.window.showWarningMessage('No successful chats recorded yet to export for fine-tuning.');
+								break;
+							}
+
+							const saveUri = await vscode.window.showSaveDialog({
+								title: 'Export Fine-Tuning Data (JSONL)',
+								defaultUri: vscode.Uri.file('modelpilot-finetuning.jsonl'),
+								filters: {
+									'JSON Lines': ['jsonl']
+								}
+							});
+
+							if (saveUri) {
+								const lines: string[] = [];
+								for (const record of ftData.fineTuningData) {
+									const formattedMsgs = record.messages.map(m => ({
+										role: m.role,
+										content: m.content
+									}));
+									
+									formattedMsgs.push({
+										role: 'assistant',
+										content: record.response
+									});
+
+									lines.push(JSON.stringify({ messages: formattedMsgs }));
+								}
+
+								const fileContent = lines.join('\n') + '\n';
+								await vscode.workspace.fs.writeFile(saveUri, Buffer.from(fileContent, 'utf8'));
+								vscode.window.showInformationMessage(`Successfully exported ${ftData.fineTuningData.length} training examples.`);
+							}
+						} catch (err: any) {
+							vscode.window.showErrorMessage(`Failed to export: ${err.message || String(err)}`);
+						}
+						break;
 				}
 			},
 			null,
@@ -110,12 +150,13 @@ export class AnalyticsPanel {
 
 	private async getProviderStatus() {
 		const keys = await this.secretsManager.getAll();
-		const providers = ['nvidia', 'groq', 'openrouter'];
+		const providers = ['nvidia', 'groq', 'openrouter', 'cerebras', 'google'];
 		const status: Record<
 			string,
 			{
 				totalKeys: number;
 				cooldowns: { keyMask: string; remainingMs: number }[];
+				activeKeyMask?: string;
 			}
 		> = {};
 
@@ -135,9 +176,23 @@ export class AnalyticsPanel {
 				};
 			});
 
+			const activeIndex = OpenAICompatibleProvider.getActiveKeyIndex(p);
+			let activeKeyMask: string | undefined = undefined;
+			if (activeKeys.length > 0) {
+				const idx = activeIndex % activeKeys.length;
+				const activeKey = activeKeys[idx];
+				if (activeKey) {
+					const mask = activeKey.length > 8 
+						? `${activeKey.slice(0, 4)}...${activeKey.slice(-4)}`
+						: '...';
+					activeKeyMask = `Key ${idx + 1} (${mask})`;
+				}
+			}
+
 			status[p] = {
 				totalKeys: activeKeys.length,
 				cooldowns: cooldownsMapped,
+				activeKeyMask
 			};
 		}
 		return status;
@@ -394,6 +449,29 @@ export class AnalyticsPanel {
 			font-weight: 500;
 		}
 
+		/* Active Key telemetry */
+		.active-key-row {
+			display: flex;
+			justify-content: space-between;
+			align-items: center;
+			font-size: 0.8rem;
+			background: rgba(255, 255, 255, 0.03);
+			padding: 6px 12px;
+			border-radius: 8px;
+			border: 1px dashed var(--border-color);
+			margin-top: 4px;
+		}
+
+		.active-key-label {
+			color: var(--text-secondary);
+		}
+
+		.active-key-value {
+			font-family: monospace;
+			font-weight: 600;
+			color: var(--accent-primary);
+		}
+
 		/* Token stats breakdown */
 		.stats-table {
 			display: flex;
@@ -487,6 +565,16 @@ export class AnalyticsPanel {
 			color: var(--accent-secondary);
 		}
 
+		.badge-provider.cerebras {
+			background: rgba(229, 28, 35, 0.15);
+			color: #e51c23;
+		}
+
+		.badge-provider.google {
+			background: rgba(66, 133, 244, 0.15);
+			color: #4285f4;
+		}
+
 		.cost-saving {
 			color: var(--success);
 			font-weight: 600;
@@ -573,6 +661,9 @@ export class AnalyticsPanel {
 				<div class="badge">
 					Total Tokens Tracked: <span id="total-tokens">0</span>
 				</div>
+				<div class="badge">
+					Total Fallbacks: <span id="total-fallbacks">0</span>
+				</div>
 			</div>
 		</div>
 
@@ -592,6 +683,11 @@ export class AnalyticsPanel {
 					<div class="meter-bar">
 						<div class="meter-fill unconfigured" id="nvidia-meter-fill"></div>
 					</div>
+				</div>
+
+				<div class="active-key-row" id="nvidia-active-key" style="display: none;">
+					<span class="active-key-label">Active Key</span>
+					<span class="active-key-value" id="nvidia-active-key-val">N/A</span>
 				</div>
 
 				<div class="cooldown-list" id="nvidia-cooldowns" style="display: none;">
@@ -635,6 +731,11 @@ export class AnalyticsPanel {
 					</div>
 				</div>
 
+				<div class="active-key-row" id="groq-active-key" style="display: none;">
+					<span class="active-key-label">Active Key</span>
+					<span class="active-key-value" id="groq-active-key-val">N/A</span>
+				</div>
+
 				<div class="cooldown-list" id="groq-cooldowns" style="display: none;">
 					<!-- Dinamically filled -->
 				</div>
@@ -676,6 +777,11 @@ export class AnalyticsPanel {
 					</div>
 				</div>
 
+				<div class="active-key-row" id="openrouter-active-key" style="display: none;">
+					<span class="active-key-label">Active Key</span>
+					<span class="active-key-value" id="openrouter-active-key-val">N/A</span>
+				</div>
+
 				<div class="cooldown-list" id="openrouter-cooldowns" style="display: none;">
 					<!-- Dinamically filled -->
 				</div>
@@ -699,6 +805,98 @@ export class AnalyticsPanel {
 					</div>
 				</div>
 			</div>
+
+			<!-- Cerebras Card -->
+			<div class="provider-card" id="cerebras-card">
+				<div class="provider-header">
+					<h3 class="provider-name">Cerebras</h3>
+					<div class="pulse-dot" id="cerebras-pulse"></div>
+				</div>
+				
+				<div class="safety-meter-container">
+					<div class="meter-label-row">
+						<span class="meter-status-text">Safety Meter</span>
+						<span class="meter-badge unconfigured" id="cerebras-badge">Unconfigured</span>
+					</div>
+					<div class="meter-bar">
+						<div class="meter-fill unconfigured" id="cerebras-meter-fill"></div>
+					</div>
+				</div>
+
+				<div class="active-key-row" id="cerebras-active-key" style="display: none;">
+					<span class="active-key-label">Active Key</span>
+					<span class="active-key-value" id="cerebras-active-key-val">N/A</span>
+				</div>
+
+				<div class="cooldown-list" id="cerebras-cooldowns" style="display: none;">
+					<!-- Dinamically filled -->
+				</div>
+
+				<div class="stats-table">
+					<div class="stats-row">
+						<span class="stats-label">Requests Sent</span>
+						<span class="stats-val" id="cerebras-requests">0</span>
+					</div>
+					<div class="stats-row">
+						<span class="stats-label">Input Tokens</span>
+						<span class="stats-val" id="cerebras-input-tokens">0</span>
+					</div>
+					<div class="stats-row">
+						<span class="stats-label">Output Tokens</span>
+						<span class="stats-val" id="cerebras-output-tokens">0</span>
+					</div>
+					<div class="stats-row" style="font-weight: 600;">
+						<span class="stats-label" style="color: var(--text-primary);">Total Tokens</span>
+						<span class="stats-val" id="cerebras-total-tokens">0</span>
+					</div>
+				</div>
+			</div>
+
+			<!-- Google Card -->
+			<div class="provider-card" id="google-card">
+				<div class="provider-header">
+					<h3 class="provider-name">Google AI Studio</h3>
+					<div class="pulse-dot" id="google-pulse"></div>
+				</div>
+				
+				<div class="safety-meter-container">
+					<div class="meter-label-row">
+						<span class="meter-status-text">Safety Meter</span>
+						<span class="meter-badge unconfigured" id="google-badge">Unconfigured</span>
+					</div>
+					<div class="meter-bar">
+						<div class="meter-fill unconfigured" id="google-meter-fill"></div>
+					</div>
+				</div>
+
+				<div class="active-key-row" id="google-active-key" style="display: none;">
+					<span class="active-key-label">Active Key</span>
+					<span class="active-key-value" id="google-active-key-val">N/A</span>
+				</div>
+
+				<div class="cooldown-list" id="google-cooldowns" style="display: none;">
+					<!-- Dinamically filled -->
+				</div>
+
+				<div class="stats-table">
+					<div class="stats-row">
+						<span class="stats-label">Requests Sent</span>
+						<span class="stats-val" id="google-requests">0</span>
+					</div>
+					<div class="stats-row">
+						<span class="stats-label">Input Tokens</span>
+						<span class="stats-val" id="google-input-tokens">0</span>
+					</div>
+					<div class="stats-row">
+						<span class="stats-label">Output Tokens</span>
+						<span class="stats-val" id="google-output-tokens">0</span>
+					</div>
+					<div class="stats-row" style="font-weight: 600;">
+						<span class="stats-label" style="color: var(--text-primary);">Total Tokens</span>
+						<span class="stats-val" id="google-total-tokens">0</span>
+					</div>
+				</div>
+			</div>
 		</div>
 
 		<!-- Model Breakdown Section -->
@@ -712,6 +910,7 @@ export class AnalyticsPanel {
 							<th>Provider</th>
 							<th>Requests</th>
 							<th>Total Tokens</th>
+							<th>Avg Latency</th>
 							<th>Commercial Cost (Paid APIs)</th>
 							<th>Actual Cost</th>
 							<th>Net Savings</th>
@@ -729,6 +928,10 @@ export class AnalyticsPanel {
 				<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M10 11v6M14 11v6"/></svg>
 				Reset Statistics
 			</button>
+			<button class="btn-refresh" onclick="exportFineTuning()" style="background-color: var(--accent-secondary); color: white;">
+				<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>
+				Export Fine-Tuning Data (JSONL)
+			</button>
 			<button class="btn-refresh" onclick="refreshData()">
 				<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/></svg>
 				Refresh Panel
@@ -743,7 +946,9 @@ export class AnalyticsPanel {
 		let activeCooldowns = {
 			nvidia: [],
 			groq: [],
-			openrouter: []
+			openrouter: [],
+			cerebras: [],
+			google: []
 		};
 
 		function resetData() {
@@ -752,6 +957,10 @@ export class AnalyticsPanel {
 
 		function refreshData() {
 			vscode.postMessage({ command: 'refresh' });
+		}
+
+		function exportFineTuning() {
+			vscode.postMessage({ command: 'exportFineTuning' });
 		}
 
 		// Handle updates from extension
@@ -765,12 +974,14 @@ export class AnalyticsPanel {
 				
 				let totalReqs = 0;
 				let totalTkn = 0;
+				let totalFallbacks = 0;
 				
-				const providers = ['nvidia', 'groq', 'openrouter'];
+				const providers = ['nvidia', 'groq', 'openrouter', 'cerebras', 'google'];
 				providers.forEach(p => {
-					const stats = data.providers[p] || { requests: 0, promptTokens: 0, completionTokens: 0, totalTokens: 0 };
+					const stats = data.providers[p] || { requests: 0, promptTokens: 0, completionTokens: 0, totalTokens: 0, totalLatencyMs: 0, totalFallbacks: 0 };
 					totalReqs += stats.requests;
 					totalTkn += stats.totalTokens;
+					totalFallbacks += stats.totalFallbacks || 0;
 					
 					document.getElementById(p + '-requests').innerText = stats.requests.toLocaleString();
 					document.getElementById(p + '-input-tokens').innerText = stats.promptTokens.toLocaleString();
@@ -815,11 +1026,24 @@ export class AnalyticsPanel {
 						pulseEl.style.backgroundColor = 'var(--warning)';
 					}
 
+					// Update Active Key Display
+					const activeKeyEl = document.getElementById(p + '-active-key');
+					const activeKeyValEl = document.getElementById(p + '-active-key-val');
+					if (activeKeyEl && activeKeyValEl) {
+						if (statusInfo.activeKeyMask && statusInfo.totalKeys > 0) {
+							activeKeyEl.style.display = 'flex';
+							activeKeyValEl.innerText = statusInfo.activeKeyMask;
+						} else {
+							activeKeyEl.style.display = 'none';
+						}
+					}
+
 					renderCooldowns(p);
 				});
 
 				document.getElementById('total-requests').innerText = totalReqs.toLocaleString();
 				document.getElementById('total-tokens').innerText = totalTkn.toLocaleString();
+				document.getElementById('total-fallbacks').innerText = totalFallbacks.toLocaleString();
 
 				// Update models breakdown table
 				const modelsSection = document.getElementById('models-section');
@@ -838,12 +1062,14 @@ export class AnalyticsPanel {
 					
 					sortedModels.forEach(m => {
 						const savings = m.commercialCost - m.actualCost;
+						const avgLatency = m.totalLatencyMs && m.requests ? (m.totalLatencyMs / m.requests / 1000).toFixed(2) + 's' : 'N/A';
 						tableHtml += \`
 							<tr>
 								<td style="font-weight: 500;">\${m.displayName || m.modelId}</td>
 								<td><span class="badge-provider \${m.provider.toLowerCase()}">\${m.provider}</span></td>
 								<td>\${m.requests}</td>
 								<td>\${m.totalTokens.toLocaleString()}</td>
+								<td>\${avgLatency}</td>
 								<td>$\${m.commercialCost.toFixed(4)}</td>
 								<td class="cost-actual">\${m.actualCost > 0 ? '$' + m.actualCost.toFixed(4) : 'Free ($0.00)'}</td>
 								<td class="cost-saving" style="font-weight: 600;">$\${savings.toFixed(4)}</td>
@@ -887,7 +1113,7 @@ export class AnalyticsPanel {
 
 		// Run a fast timer to update remaining cooldown seconds in real-time
 		setInterval(() => {
-			const providers = ['nvidia', 'groq', 'openrouter'];
+			const providers = ['nvidia', 'groq', 'openrouter', 'cerebras', 'google'];
 			providers.forEach(p => {
 				const list = activeCooldowns[p];
 				if (list && list.length > 0) {
