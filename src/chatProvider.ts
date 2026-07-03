@@ -152,7 +152,7 @@ export class ModelPilotChatProvider implements vscode.LanguageModelChatProvider<
 				const expertId = this.getExpertId();
 				const recommender = new Recommender(this.registry);
 				const inputTokens = estimateMessagesTokens(apiMessages);
-				recs = recommender.recommend(expertId, 5, inputTokens);
+				recs = recommender.recommend(expertId, 100, inputTokens);
 				if (recs.length === 0) {
 					throw new Error('No models available. Please configure your API keys first.');
 				}

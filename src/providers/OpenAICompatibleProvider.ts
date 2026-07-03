@@ -1,5 +1,6 @@
 import { IProvider, Message, LiveModel, ChatOptions, Tool, ToolCall, ChatResult } from './IProvider';
 import { getModelProfile } from '../data/modelProfiles';
+import * as fs from 'fs';
 
 function formatMessagesForNonNativeTools(messages: Message[]): Message[] {
 	return messages.map(m => {
@@ -96,8 +97,14 @@ export function parseRetryAfter(errText: string, headers?: { get(name: string): 
 		}
 	}
 
+	let jsonText = errText;
+	const firstBrace = errText.indexOf('{');
+	const lastBrace = errText.lastIndexOf('}');
+	if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
+		jsonText = errText.substring(firstBrace, lastBrace + 1);
+	}
 	try {
-		const parsed = JSON.parse(errText);
+		const parsed = JSON.parse(jsonText);
 		const val = parsed.error?.retry_after_seconds ?? parsed.retry_after_seconds;
 		if (val !== undefined) {
 			const parsedVal = parseFloat(val);
@@ -210,6 +217,37 @@ export abstract class OpenAICompatibleProvider implements IProvider {
 		context?: any,
 		options: ChatOptions = {},
 	): Promise<ChatResult> {
+		const debugLogPath = '/home/kali/modelpilot/openai_compatible_debug.log';
+		const log = (msg: string) => {
+			try {
+				fs.appendFileSync(debugLogPath, `[${new Date().toISOString()}] [${this.name}] ${msg}\n`);
+			} catch {}
+		};
+		const safeStr = (obj: any): string => {
+			try {
+				return JSON.stringify(obj);
+			} catch (e: any) {
+				return `[Serialization Error: ${e.message}]`;
+			}
+		};
+		log(`chat() called for model: ${modelId}. Options: ${safeStr({ maxTokens: options.maxTokens, stream: options.stream })}. Messages: ${safeStr(messages)}`);
+		try {
+			const res = await this.chatInternal(modelId, messages, tools, context, options);
+			log(`chat() succeeded for model: ${modelId}. Response: ${safeStr(res)}`);
+			return res;
+		} catch (err: any) {
+			log(`chat() failed for model: ${modelId}. Error: ${err instanceof Error ? err.message : String(err)}`);
+			throw err;
+		}
+	}
+
+	async chatInternal(
+		modelId: string,
+		messages: Message[],
+		tools?: Tool[],
+		context?: any,
+		options: ChatOptions = {},
+	): Promise<ChatResult> {
 		const activeKeys = this.apiKeys.filter(k => k.trim().length > 0);
 		if (activeKeys.length === 0) {
 			throw new Error(`Provider ${this.name} has no API keys configured.`);
@@ -285,6 +323,19 @@ export abstract class OpenAICompatibleProvider implements IProvider {
 							body: JSON.stringify(body),
 							signal: attemptController.signal,
 						});
+					}
+
+					if (!response.ok) {
+						const errText = await response.text();
+						let parsedMessage = '';
+						try {
+							const parsed = JSON.parse(errText);
+							parsedMessage = parsed.error?.message || parsed.message || '';
+						} catch {}
+						const errMsg = parsedMessage ? `${parsedMessage}` : errText;
+						const err = new Error(`API error (status ${response.status}): ${errMsg || response.statusText}`);
+						(err as any).status = response.status;
+						throw err;
 					}
 
 					if (options.stream && options.onChunk) {

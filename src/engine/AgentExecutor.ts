@@ -221,11 +221,11 @@ export class AgentExecutor {
 	private static async readFile(relPath: string, agentCwd: string): Promise<string> {
 		const p = getWorkspacePath(relPath, agentCwd);
 		const content = await fs.promises.readFile(p, 'utf8');
-		const maxChars = 10000;
+		const maxChars = 6000;
 		if (content.length > maxChars) {
-			const head = content.slice(0, 5000);
-			const tail = content.slice(-5000);
-			return `${head}\n\n[NOTE: File content truncated for length. Showing first 5000 and last 5000 characters out of ${content.length} total.]\n\n${tail}`;
+			const head = content.slice(0, 3000);
+			const tail = content.slice(-3000);
+			return `${head}\n\n[NOTE: File content truncated for length. Showing first 3000 and last 3000 characters out of ${content.length} total.]\n\n${tail}`;
 		}
 		return content;
 	}
@@ -264,7 +264,10 @@ export class AgentExecutor {
 
 	private static async searchWorkspace(query: string, agentCwd: string): Promise<string> {
 		const root = getWorkspaceRoot();
-		const files = await vscode.workspace.findFiles('**/*', '**/node_modules/**');
+		const files = await vscode.workspace.findFiles(
+			'**/*',
+			'{**/node_modules/**,**/dist/**,**/out/**,**/build/**,**/.git/**,**/.vscode-test/**,**/.next/**,**/coverage/**}'
+		);
 		const results: string[] = [];
 
 		const batchSize = 30;
@@ -273,6 +276,11 @@ export class AgentExecutor {
 			await Promise.all(batch.map(async (file) => {
 				const relPath = path.relative(root, file.fsPath);
 				try {
+					const stat = await fs.promises.stat(file.fsPath);
+					if (stat.size > 1024 * 1024) {
+						// Skip files larger than 1MB to avoid memory exhaustion / OOM
+						return;
+					}
 					const content = await fs.promises.readFile(file.fsPath, 'utf8');
 					if (content.toLowerCase().includes(query.toLowerCase())) {
 						const lines = content.split('\n');
@@ -283,7 +291,7 @@ export class AgentExecutor {
 						});
 					}
 				} catch {
-					// Skip binary files
+					// Skip binary or unreadable files
 				}
 			}));
 
@@ -350,7 +358,11 @@ export class AgentExecutor {
 		try {
 			const resolved = path.resolve(root, agentCwd);
 			if (resolved === root || resolved.startsWith(root + path.sep)) {
-				commandCwd = resolved;
+				if (fs.existsSync(resolved) && fs.statSync(resolved).isDirectory()) {
+					commandCwd = resolved;
+				} else {
+					return { result: `Error: The directory "${agentCwd}" does not exist. Please create it first before running commands inside it.` };
+				}
 			}
 		} catch {
 			// fallback to root
@@ -439,12 +451,12 @@ export class AgentExecutor {
 					}
 				}
 
-				const maxChars = 10000;
+				const maxChars = 5000;
 				let finalOutput = output;
 				if (finalOutput.length > maxChars) {
-					const head = finalOutput.slice(0, 2000);
-					const tail = finalOutput.slice(-8000);
-					finalOutput = `${head}\n\n[NOTE: Command output truncated for length. Showing first 2000 and last 8000 characters out of ${finalOutput.length} total.]\n\n${tail}`;
+					const head = finalOutput.slice(0, 1500);
+					const tail = finalOutput.slice(-3500);
+					finalOutput = `${head}\n\n[NOTE: Command output truncated for length. Showing first 1500 and last 3500 characters out of ${finalOutput.length} total.]\n\n${tail}`;
 				}
 				const exitInfo = `\n[Exit code: ${code}]`;
 				const resultStr = finalOutput

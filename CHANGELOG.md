@@ -1,5 +1,45 @@
 # Changelog
 
+## 1.0.0
+
+### Added
+- **Custom Instructions Support**: Personalize ModelPilot's chat and inline code generation using a new `modelpilot.customInstructions` VS Code setting or workspace-level instructions files (`.github/copilot-instructions.md`, `.github/modelpilot-instructions.md`, `.modelpilot-instructions.md`).
+- **Real-Time Compilation Diagnostics**: Automatically capture typescript/lint errors from VS Code's problems tab after file writes, allowing the model's self-correction loop to fix type errors instantly.
+- **Git Commit Message suggestion on Save**: Automatically generate commit suggestions and change summaries when modified files are saved, with options to commit immediately or copy to the Git input box.
+- **Offline Fallbacks for Providers**: Gracefully fallback to static/offline model profiles on model listing validation/authentication failures, preventing model registration synchronizer crashes (specifically resolving Cerebras routing issues).
+- **Better Router Retry & Fallback Logic**: Prioritize Tier 1 providers and retry them round-robin before failing over to Tier 2. Robustly parse API key cooldown/reset states from headers and text response bodies.
+- **Improved API Response Verification**: Propagate raw status codes and body error details to the chat panel instead of masking provider errors under generic "Empty response received from model" messages.
+
+## 0.8.5
+
+### Added
+- **Git Commit Message Generator (`/commit`)**: Automatically analyze all tracked repository changes via `git diff` and generate a concise Conventional Commit message, then automatically commit the changes.
+
+## 0.8.4
+
+### Added
+- **Smart Follow-up Suggestions**: Suggest 3 context-aware, highly concise follow-up questions at the end of every chat response to guide next steps.
+
+## 0.8.3
+
+### Added
+- **Terminal Command Suggestions (`/terminal`)**: Generate shell-appropriate command suggestions with an interactive `[▶ Run in Terminal]` button that executes them instantly in a dedicated `ModelPilot` VS Code terminal.
+
+## 0.8.2
+
+### Added
+- **ModelPilot Inline Chat**: Ask ModelPilot to edit or generate code directly in the active editor using `Ctrl+Alt+I` / `Cmd+Alt+I`, bypassing the sidebar chat entirely.
+- **Automatic Codebase Context Retrieval**: Automatically analyzes user prompts for keywords, searches the workspace for matching file names, and attaches them as context to the prompt.
+
+## 0.8.0
+
+### Added
+- **Terminal Diagnostic Copilot**: Automatically monitors terminal command failures and offers quick actions to "Explain with ModelPilot" or "Fix with ModelPilot", capturing and cleaning shell integration outputs.
+- **In-Text File Reference Resolution**: Mimics Copilot's `#file` and backtick syntax, automatically parsing and attaching files mentioned in the prompt text as context.
+- **New Frontier Models**: Added profiles and optimized routing weights for OpenAI's `GPT-OSS 120B` and Zhipu AI's `GLM 4.7` across Groq and Cerebras.
+- **Full Tool Execution History**: Preserves all previous turns' tool calls and results in the chat history, giving the model perfect memory of created files and directory structures.
+- **Enhanced Safety & Scoping Rules**: Added operational guidelines to automatically scope system-wide actions to user-accessible directories and handle security blocks gracefully.
+
 ## 0.7.0
 
 ### Added

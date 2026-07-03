@@ -3,12 +3,14 @@ import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { handleChatRequest } from '../extension';
+import { handleChatRequest, handleInlineChat } from '../extension';
 import { ModelRegistry } from '../registry/ModelRegistry';
 import { Router } from '../engine/Router';
 import { SecretsManager } from '../secrets';
 import { healthMonitor } from '../engine/HealthMonitor';
 import { getWorkspaceRoot, AgentExecutor } from '../engine/AgentExecutor';
+import { Recommender } from '../engine/Recommender';
+import { CerebrasProvider } from '../providers/CerebrasProvider';
 import { OpenAICompatibleProvider } from '../providers/OpenAICompatibleProvider';
 
 suite('ModelPilot Chat Participant Integration Tests', () => {
@@ -194,7 +196,7 @@ suite('ModelPilot Chat Participant Integration Tests', () => {
 		// @ts-ignore
 		vscode.window.showWarningMessage = async (message: string, options: any, ...items: string[]) => {
 			assert.ok(message.includes('prime.ts'), 'Warning dialog should correctly list the file path being created');
-			return 'Approve';
+			return items.includes('Accept Changes') ? 'Accept Changes' : 'Approve';
 		};
 
 		const mockRequest: any = {
@@ -1853,6 +1855,111 @@ suite('ModelPilot Chat Participant Integration Tests', () => {
 		}
 	});
 
+	test('should resolve in-text file references (#file and auto-path detection) successfully', async () => {
+		const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+		if (!root) { return; }
+		const testFile = path.resolve(root, 'test-intext-file.txt');
+		fs.writeFileSync(testFile, 'In-text context file content');
+
+		let receivedPrompt = '';
+		Router.prototype.route = async (recs, messages, tools, options) => {
+			const userMsg = messages.find(m => m.role === 'user');
+			if (userMsg) {
+				receivedPrompt = userMsg.content;
+			}
+			return { content: 'In-text resolved' };
+		};
+
+		const mockRequest: any = {
+			prompt: 'Check the file #file:test-intext-file.txt and also `test-intext-file.txt`',
+			references: []
+		};
+		const mockContext: any = { history: [] };
+		const mockResponseStream: any = {
+			markdown: () => mockResponseStream,
+			progress: () => mockResponseStream
+		};
+		const mockToken: any = {
+			isCancellationRequested: false,
+			onCancellationRequested: () => ({ dispose: () => {} })
+		};
+
+		try {
+			await handleChatRequest(
+				mockRequest,
+				mockContext,
+				mockResponseStream,
+				mockToken,
+				mockSm as SecretsManager,
+				registry,
+				config,
+				async () => 3
+			);
+
+			assert.ok(receivedPrompt.includes('--- File: test-intext-file.txt (referenced in-text) ---'), 'Should include in-text file reference banner');
+			assert.ok(receivedPrompt.includes('In-text context file content'), 'Should include in-text file content');
+		} finally {
+			if (fs.existsSync(testFile)) {
+				fs.unlinkSync(testFile);
+			}
+		}
+	});
+
+	test('should automatically retrieve relevant codebase files based on prompt keywords', async () => {
+		const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+		if (!root) { return; }
+		const testFile = path.resolve(root, 'test-codebase-file.txt');
+		fs.writeFileSync(testFile, 'Codebase auto-search file content');
+
+		let receivedPrompt = '';
+		let progressMessage = '';
+		Router.prototype.route = async (recs, messages, tools, options) => {
+			const userMsg = messages.find(m => m.role === 'user');
+			if (userMsg) {
+				receivedPrompt = userMsg.content;
+			}
+			return { content: 'Codebase search completed' };
+		};
+
+		const mockRequest: any = {
+			prompt: 'Explain the logic inside test-codebase-file.txt',
+			references: []
+		};
+		const mockContext: any = { history: [] };
+		const mockResponseStream: any = {
+			markdown: () => mockResponseStream,
+			progress: (msg: string) => {
+				progressMessage = msg;
+				return mockResponseStream;
+			}
+		};
+		const mockToken: any = {
+			isCancellationRequested: false,
+			onCancellationRequested: () => ({ dispose: () => {} })
+		};
+
+		try {
+			await handleChatRequest(
+				mockRequest,
+				mockContext,
+				mockResponseStream,
+				mockToken,
+				mockSm as SecretsManager,
+				registry,
+				config,
+				async () => 3
+			);
+
+			assert.ok(receivedPrompt.includes('--- File: test-codebase-file.txt (found via automatic codebase search) ---'), 'Should include codebase search reference banner');
+			assert.ok(receivedPrompt.includes('Codebase auto-search file content'), 'Should include codebase search file content');
+			assert.ok(progressMessage.includes('Used codebase references:'), 'Should output progress message showing referenced files');
+		} finally {
+			if (fs.existsSync(testFile)) {
+				fs.unlinkSync(testFile);
+			}
+		}
+	});
+
 	test('should auto-classify operationMode using fast intent classifier', async () => {
 		Router.prototype.route = async (recs, messages, tools, options) => {
 			if (messages[0]?.content?.includes('intent classifier')) {
@@ -2576,4 +2683,1183 @@ suite('ModelPilot Chat Participant Integration Tests', () => {
 			}
 		}
 	});
+
+	test('should successfully execute modelpilot.inlineChat command and edit editor text', async () => {
+		const mockDocument: any = {
+			languageId: 'typescript',
+			getText: (selection: any) => 'original selection content'
+		};
+		let insertedText = '';
+		const mockEditor: any = {
+			document: mockDocument,
+			selection: {
+				isEmpty: false,
+				active: { line: 0, character: 0 }
+			},
+			edit: async (callback: (editBuilder: any) => void) => {
+				const editBuilder = {
+					replace: (selection: any, text: string) => {
+						insertedText = text;
+					},
+					insert: (position: any, text: string) => {
+						insertedText = text;
+					}
+				};
+				callback(editBuilder);
+				return true;
+			}
+		};
+
+		const originalShowInputBox = vscode.window.showInputBox;
+		vscode.window.showInputBox = async () => 'make it uppercase';
+
+		const originalRouteMethod = Router.prototype.route;
+		Router.prototype.route = async (recs, messages, tools, options) => {
+			return { content: 'ORIGINAL SELECTION CONTENT' };
+		};
+
+		const originalRecommend = Recommender.prototype.recommend;
+		Recommender.prototype.recommend = () => [
+			{
+				model: {
+					id: 'test-model',
+					provider: 'groq',
+					displayName: 'Test Model',
+					contextLength: 8192,
+					capabilities: { coding: 10, reasoning: 10, writing: 10, learning: 10, security: 10, speed: 10 },
+					description: 'Test',
+					lastVerified: '2026-06-30',
+					available: true
+				},
+				rank: 1,
+				reason: 'test'
+			}
+		];
+
+		let showErrorMessageCalled = '';
+		const originalShowErrorMessage = vscode.window.showErrorMessage;
+		// @ts-ignore
+		vscode.window.showErrorMessage = async (msg: string) => {
+			showErrorMessageCalled = msg;
+			return undefined;
+		};
+
+		try {
+			await handleInlineChat(mockEditor, mockSm as SecretsManager, registry);
+			assert.strictEqual(showErrorMessageCalled, '', `Should not show error message, but got: ${showErrorMessageCalled}`);
+			assert.strictEqual(insertedText, 'ORIGINAL SELECTION CONTENT');
+		} finally {
+			vscode.window.showInputBox = originalShowInputBox;
+			Router.prototype.route = originalRouteMethod;
+			Recommender.prototype.recommend = originalRecommend;
+			vscode.window.showErrorMessage = originalShowErrorMessage;
+		}
+	});
+
+	test('should successfully execute modelpilot.inlineChat and strip closed/unclosed think tags', async () => {
+		const mockDocument: any = {
+			languageId: 'python',
+			getText: (selection: any) => ''
+		};
+		let insertedText = '';
+		const mockEditor: any = {
+			document: mockDocument,
+			selection: {
+				isEmpty: true,
+				active: { line: 0, character: 0 }
+			},
+			edit: async (callback: (editBuilder: any) => void) => {
+				const editBuilder = {
+					replace: (selection: any, text: string) => {
+						insertedText = text;
+					},
+					insert: (position: any, text: string) => {
+						insertedText = text;
+					}
+				};
+				callback(editBuilder);
+				return true;
+			}
+		};
+
+		const originalShowInputBox = vscode.window.showInputBox;
+		vscode.window.showInputBox = async () => 'write python code';
+
+		const originalRouteMethod = Router.prototype.route;
+		Router.prototype.route = async (recs, messages, tools, options) => {
+			return { content: '<think>\nThinking...\n</think>\ndef is_prime(n):\n    return True' };
+		};
+
+		const originalRecommend = Recommender.prototype.recommend;
+		Recommender.prototype.recommend = () => [
+			{
+				model: {
+					id: 'test-model',
+					provider: 'groq',
+					displayName: 'Test Model',
+					contextLength: 8192,
+					capabilities: { coding: 10, reasoning: 10, writing: 10, learning: 10, security: 10, speed: 10 },
+					description: 'Test',
+					lastVerified: '2026-06-30',
+					available: true
+				},
+				rank: 1,
+				reason: 'test'
+			}
+		];
+
+		try {
+			await handleInlineChat(mockEditor, mockSm as SecretsManager, registry);
+			assert.strictEqual(insertedText, 'def is_prime(n):\n    return True');
+
+			// Test unclosed think tag
+			Router.prototype.route = async (recs, messages, tools, options) => {
+				return { content: '<think>\nThinking...\nCode got cut off' };
+			};
+			insertedText = '';
+			await handleInlineChat(mockEditor, mockSm as SecretsManager, registry);
+			assert.strictEqual(insertedText, '');
+		} finally {
+			vscode.window.showInputBox = originalShowInputBox;
+			Router.prototype.route = originalRouteMethod;
+			Recommender.prototype.recommend = originalRecommend;
+		}
+	});
+
+	test('should route /terminal slash command and generate command with buttons', async () => {
+		const originalRouteMethod = Router.prototype.route;
+		Router.prototype.route = async (recs, messages, tools, options) => {
+			return { content: 'Here is the command:\n\n```bash\nls -la\n```' };
+		};
+
+		const mockRequest: any = {
+			prompt: 'list files',
+			command: 'terminal',
+			references: []
+		};
+		const mockContext: any = {
+			history: []
+		};
+
+		const markdowns: string[] = [];
+		const mockResponseStream: any = {
+			markdown: (value: any) => {
+				markdowns.push(typeof value === 'string' ? value : value.value);
+				return mockResponseStream;
+			},
+			progress: () => mockResponseStream
+		};
+		const mockToken: any = {
+			isCancellationRequested: false,
+			onCancellationRequested: () => ({ dispose: () => {} })
+		};
+
+		await handleChatRequest(
+			mockRequest,
+			mockContext,
+			mockResponseStream,
+			mockToken,
+			mockSm as SecretsManager,
+			registry,
+			config,
+			async () => 3
+		);
+
+		Router.prototype.route = originalRouteMethod;
+
+		const fullMarkdown = markdowns.join('\n');
+		assert.ok(fullMarkdown.includes('ls -la'), 'Should contain the command');
+		assert.ok(fullMarkdown.includes('[▶ Run in Terminal]'), 'Should contain the run button');
+		assert.ok(fullMarkdown.includes('command:modelpilot.runInTerminal'), 'Should trigger runInTerminal command');
+	});
+
+	test('should statefully inject terminal buttons during streaming', async () => {
+		const originalRouteMethod = Router.prototype.route;
+		Router.prototype.route = async (recs, messages, tools, options) => {
+			if (messages[0]?.content?.includes('intent classifier')) {
+				return { content: '{"isChitchat": false, "expertId": "coding", "operationMode": "ask"}' };
+			}
+			if (options?.onChunk) {
+				options.onChunk('Here is ');
+				options.onChunk('the command:\n\n');
+				options.onChunk('```bash\n');
+				options.onChunk('npm run ');
+				options.onChunk('dev\n');
+				options.onChunk('```\n');
+				options.onChunk('And that is it.');
+			}
+			return { content: 'Here is the command:\n\n```bash\nnpm run dev\n```\nAnd that is it.' };
+		};
+
+		const mockRequest: any = {
+			prompt: 'how to start dev server',
+			references: []
+		};
+		const mockContext: any = {
+			history: []
+		};
+
+		const markdowns: string[] = [];
+		const mockResponseStream: any = {
+			markdown: (value: any) => {
+				markdowns.push(typeof value === 'string' ? value : value.value);
+				return mockResponseStream;
+			},
+			progress: () => mockResponseStream
+		};
+		const mockToken: any = {
+			isCancellationRequested: false,
+			onCancellationRequested: () => ({ dispose: () => {} })
+		};
+
+		await handleChatRequest(
+			mockRequest,
+			mockContext,
+			mockResponseStream,
+			mockToken,
+			mockSm as SecretsManager,
+			registry,
+			{ ...config, stream: true },
+			async () => 3
+		);
+
+		Router.prototype.route = originalRouteMethod;
+
+		const fullMarkdown = markdowns.join('');
+		assert.ok(fullMarkdown.includes('npm run dev'), 'Should contain the command');
+		assert.ok(fullMarkdown.includes('[▶ Run in Terminal]'), 'Should contain the run button');
+		assert.ok(fullMarkdown.includes('command:modelpilot.runInTerminal'), 'Should trigger runInTerminal command');
+	});
+
+	test('should inject terminal buttons in non-streamed general chat', async () => {
+		const originalRouteMethod = Router.prototype.route;
+		Router.prototype.route = async (recs, messages, tools, options) => {
+			if (messages[0]?.content?.includes('intent classifier')) {
+				return { content: '{"isChitchat": false, "expertId": "coding", "operationMode": "ask"}' };
+			}
+			return { content: 'Run this:\n```sh\nclear\n```' };
+		};
+
+		const mockRequest: any = {
+			prompt: 'clear terminal',
+			references: []
+		};
+		const mockContext: any = {
+			history: []
+		};
+
+		const markdowns: string[] = [];
+		const mockResponseStream: any = {
+			markdown: (value: any) => {
+				markdowns.push(typeof value === 'string' ? value : value.value);
+				return mockResponseStream;
+			},
+			progress: () => mockResponseStream
+		};
+		const mockToken: any = {
+			isCancellationRequested: false,
+			onCancellationRequested: () => ({ dispose: () => {} })
+		};
+
+		await handleChatRequest(
+			mockRequest,
+			mockContext,
+			mockResponseStream,
+			mockToken,
+			mockSm as SecretsManager,
+			registry,
+			{ ...config, stream: false },
+			async () => 3
+		);
+
+		Router.prototype.route = originalRouteMethod;
+
+		const fullMarkdown = markdowns.join('\n');
+		assert.ok(fullMarkdown.includes('clear'), 'Should contain the command');
+		assert.ok(fullMarkdown.includes('[▶ Run in Terminal]'), 'Should contain the run button');
+	});
+
+	test('should return follow-up suggestions for general chat requests', async () => {
+		process.env.MODELPILOT_GENERATE_FOLLOWUPS = 'true';
+		const originalRouteMethod = Router.prototype.route;
+		Router.prototype.route = async (recs, messages, tools, options) => {
+			if (messages.some(m => m.content?.includes('intent classifier'))) {
+				return { content: '{"isChitchat": false, "expertId": "coding", "operationMode": "ask"}' };
+			}
+			if (messages.some(m => m.content?.includes('generate exactly 3 short'))) {
+				return { content: '["What is next?", "How to optimize?", "Give an example"]' };
+			}
+			return { content: 'This is the main response.' };
+		};
+
+		const mockRequest: any = {
+			prompt: 'some prompt',
+			references: []
+		};
+		const mockContext: any = {
+			history: []
+		};
+
+		const mockResponseStream: any = {
+			markdown: () => mockResponseStream,
+			progress: () => mockResponseStream
+		};
+		const mockToken: any = {
+			isCancellationRequested: false,
+			onCancellationRequested: () => ({ dispose: () => {} })
+		};
+
+		try {
+			const result = await handleChatRequest(
+				mockRequest,
+				mockContext,
+				mockResponseStream,
+				mockToken,
+				mockSm as SecretsManager,
+				registry,
+				config,
+				async () => 3
+			);
+
+			assert.ok(result);
+			assert.ok(result.followups);
+			assert.strictEqual(result.followups.length, 3);
+			assert.strictEqual(result.followups[0].prompt, 'What is next?');
+			assert.strictEqual(result.followups[1].prompt, 'How to optimize?');
+			assert.strictEqual(result.followups[2].prompt, 'Give an example');
+		} finally {
+			Router.prototype.route = originalRouteMethod;
+			delete process.env.MODELPILOT_GENERATE_FOLLOWUPS;
+		}
+	});
+
+	test('should return follow-up suggestions for /terminal slash command', async () => {
+		process.env.MODELPILOT_GENERATE_FOLLOWUPS = 'true';
+		const originalRouteMethod = Router.prototype.route;
+		Router.prototype.route = async (recs, messages, tools, options) => {
+			if (messages.some(m => m.content?.includes('generate exactly 3 short'))) {
+				return { content: '["Explain command", "Alternative options", "Run it"]' };
+			}
+			return { content: '```bash\nls\n```' };
+		};
+
+		const mockRequest: any = {
+			prompt: 'list files',
+			command: 'terminal',
+			references: []
+		};
+		const mockContext: any = {
+			history: []
+		};
+
+		const mockResponseStream: any = {
+			markdown: () => mockResponseStream,
+			progress: () => mockResponseStream
+		};
+		const mockToken: any = {
+			isCancellationRequested: false,
+			onCancellationRequested: () => ({ dispose: () => {} })
+		};
+
+		try {
+			const result = await handleChatRequest(
+				mockRequest,
+				mockContext,
+				mockResponseStream,
+				mockToken,
+				mockSm as SecretsManager,
+				registry,
+				config,
+				async () => 3
+			);
+
+			assert.ok(result);
+			assert.ok(result.followups);
+			assert.strictEqual(result.followups.length, 3);
+			assert.strictEqual(result.followups[0].prompt, 'Explain command');
+		} finally {
+			Router.prototype.route = originalRouteMethod;
+			delete process.env.MODELPILOT_GENERATE_FOLLOWUPS;
+		}
+	});
+
+	test('should return no changes detected for /commit when repository is clean', async () => {
+		const cp = require('child_process');
+		const originalExec = cp.exec;
+		const originalWorkspaceFolders = vscode.workspace.workspaceFolders;
+		
+		Object.defineProperty(vscode.workspace, 'workspaceFolders', {
+			get: () => [{ uri: vscode.Uri.file('/tmp'), name: 'tmp', index: 0 }],
+			configurable: true
+		});
+
+		cp.exec = (cmd: string, options: any, callback: any) => {
+			if (cmd.includes('git status')) {
+				callback(null, ''); // clean
+			} else {
+				callback(new Error('Unexpected command'));
+			}
+		};
+
+		const mockRequest: any = {
+			prompt: '',
+			command: 'commit',
+			references: []
+		};
+		const mockContext: any = {
+			history: []
+		};
+
+		const markdowns: string[] = [];
+		const mockResponseStream: any = {
+			markdown: (value: any) => {
+				markdowns.push(typeof value === 'string' ? value : value.value);
+				return mockResponseStream;
+			},
+			progress: () => mockResponseStream
+		};
+		const mockToken: any = {
+			isCancellationRequested: false,
+			onCancellationRequested: () => ({ dispose: () => {} })
+		};
+
+		try {
+			await handleChatRequest(
+				mockRequest,
+				mockContext,
+				mockResponseStream,
+				mockToken,
+				mockSm as SecretsManager,
+				registry,
+				config,
+				async () => 3
+			);
+
+			const fullMarkdown = markdowns.join('\n');
+			assert.ok(fullMarkdown.includes('No changes detected'), `Expected "No changes detected", got: "${fullMarkdown}"`);
+		} finally {
+			cp.exec = originalExec;
+			Object.defineProperty(vscode.workspace, 'workspaceFolders', {
+				get: () => originalWorkspaceFolders,
+				configurable: true
+			});
+		}
+	});
+
+	test('should generate commit message and commit changes when they exist', async () => {
+		const cp = require('child_process');
+		const originalExec = cp.exec;
+		const originalWorkspaceFolders = vscode.workspace.workspaceFolders;
+		
+		Object.defineProperty(vscode.workspace, 'workspaceFolders', {
+			get: () => [{ uri: vscode.Uri.file('/tmp'), name: 'tmp', index: 0 }],
+			configurable: true
+		});
+
+		let gitCommitCmdRun = '';
+		cp.exec = (cmd: string, options: any, callback: any) => {
+			if (cmd.includes('git status')) {
+				callback(null, ' M package.json');
+			} else if (cmd.includes('git diff')) {
+				callback(null, 'diff --git a/package.json b/package.json');
+			} else if (cmd.includes('git commit')) {
+				gitCommitCmdRun = cmd;
+				callback(null, '[master abc123f] feat: update package');
+			} else {
+				callback(new Error('Unexpected command: ' + cmd));
+			}
+		};
+
+		const originalRouteMethod = Router.prototype.route;
+		Router.prototype.route = async (recs, messages, tools, options) => {
+			return { content: 'feat(core): bump version' };
+		};
+
+		const mockRequest: any = {
+			prompt: '',
+			command: 'commit',
+			references: []
+		};
+		const mockContext: any = {
+			history: []
+		};
+
+		const markdowns: string[] = [];
+		const mockResponseStream: any = {
+			markdown: (value: any) => {
+				markdowns.push(typeof value === 'string' ? value : value.value);
+				return mockResponseStream;
+			},
+			progress: () => mockResponseStream
+		};
+		const mockToken: any = {
+			isCancellationRequested: false,
+			onCancellationRequested: () => ({ dispose: () => {} })
+		};
+
+		try {
+			await handleChatRequest(
+				mockRequest,
+				mockContext,
+				mockResponseStream,
+				mockToken,
+				mockSm as SecretsManager,
+				registry,
+				config,
+				async () => 3
+			);
+
+			const fullMarkdown = markdowns.join('\n');
+			assert.ok(fullMarkdown.includes('Successfully committed changes'), `Expected "Successfully committed changes", got: "${fullMarkdown}"`);
+			assert.ok(fullMarkdown.includes('feat(core): bump version'));
+			assert.ok(gitCommitCmdRun.includes('feat(core): bump version'));
+		} finally {
+			cp.exec = originalExec;
+			Router.prototype.route = originalRouteMethod;
+			Object.defineProperty(vscode.workspace, 'workspaceFolders', {
+				get: () => originalWorkspaceFolders,
+				configurable: true
+			});
+		}
+	});
+
+	test('should invoke vscode.diff command in default approval mode for write_file and create_file', async () => {
+		const originalGetConfiguration = vscode.workspace.getConfiguration;
+		const originalExecuteCommand = vscode.commands.executeCommand;
+
+		vscode.workspace.getConfiguration = (section?: string, scope?: any) => {
+			if (section === 'modelpilot') {
+				return {
+					get: (key: string) => {
+						if (key === 'approvalMode') { return 'default'; }
+						return undefined;
+					}
+				} as any;
+			}
+			if (section === 'chat.permissions') {
+				return {
+					get: (key: string) => {
+						return undefined;
+					}
+				} as any;
+			}
+			return originalGetConfiguration(section, scope);
+		};
+
+		let executeCommandCalled: { command: string; args: any[] }[] = [];
+		vscode.commands.executeCommand = (async (command: string, ...args: any[]) => {
+			executeCommandCalled.push({ command, args });
+			return undefined;
+		}) as any;
+
+		const originalShowWarningMessage = vscode.window.showWarningMessage;
+		let warningMessageCalled = '';
+		vscode.window.showWarningMessage = async (message: string, options: any, ...items: any[]) => {
+			warningMessageCalled = message;
+			return 'Accept Changes' as any;
+		};
+
+		const originalRouteMethod = Router.prototype.route;
+		let routeTurn = 0;
+		Router.prototype.route = async (recs, messages, tools, options) => {
+			if (routeTurn === 0) {
+				routeTurn++;
+				return {
+					content: 'Proposing write_file',
+					toolCalls: [
+						{
+							id: 'tc-write-diff-test',
+							type: 'function',
+							function: {
+								name: 'write_file',
+								arguments: JSON.stringify({ path: 'test_diff.txt', content: 'new content' }),
+							},
+						},
+					],
+				};
+			}
+			return { content: 'File written successfully' };
+		};
+
+		const mockRequest: any = {
+			prompt: 'write a file',
+			command: 'coding',
+			references: [],
+		};
+		const mockContext: any = {
+			history: [],
+		};
+		const mockResponseStream: any = {
+			markdown: () => mockResponseStream,
+			progress: () => mockResponseStream,
+		};
+		const mockToken: any = {
+			isCancellationRequested: false,
+			onCancellationRequested: () => ({ dispose: () => {} }),
+		};
+
+		let fileWritten = false;
+		const originalWriteFile = AgentExecutor.execute;
+		// @ts-ignore
+		AgentExecutor.execute = async (toolName: string, args: any, agentCwd: string) => {
+			if (toolName === 'write_file') {
+				fileWritten = true;
+				return { result: 'Success' };
+			}
+			return { result: 'Ignored' };
+		};
+
+		try {
+			await handleChatRequest(
+				mockRequest,
+				mockContext,
+				mockResponseStream,
+				mockToken,
+				mockSm as SecretsManager,
+				registry,
+				config,
+				async () => 3
+			);
+
+			// Verify vscode.diff was called
+			const diffCall = executeCommandCalled.find(c => c.command === 'vscode.diff');
+			assert.ok(diffCall, 'Should have executed vscode.diff command');
+			assert.strictEqual(diffCall.args[2], 'Proposed Changes: test_diff.txt');
+
+			// Verify the warning message prompted the user with the diff review message
+			assert.ok(warningMessageCalled.includes('Review the proposed changes in the diff editor'));
+			assert.strictEqual(fileWritten, true, 'Should have executed the write_file tool after Accept Changes');
+		} finally {
+			vscode.workspace.getConfiguration = originalGetConfiguration;
+			vscode.commands.executeCommand = originalExecuteCommand;
+			vscode.window.showWarningMessage = originalShowWarningMessage;
+			Router.prototype.route = originalRouteMethod;
+			AgentExecutor.execute = originalWriteFile;
+		}
+	});
+
+	test('should detect and append VS Code diagnostics errors after write_file tool call', async () => {
+		const originalGetConfiguration = vscode.workspace.getConfiguration;
+		const originalGetDiagnostics = vscode.languages.getDiagnostics;
+
+		vscode.workspace.getConfiguration = (section?: string, scope?: any) => {
+			if (section === 'modelpilot') {
+				return {
+					get: (key: string, defaultValue?: any) => {
+						if (key === 'approvalMode') { return 'bypass'; }
+						if (key === 'maxAutoFixRetries') { return 3; }
+						return defaultValue;
+					}
+				} as any;
+			}
+			return originalGetConfiguration(section, scope);
+		};
+
+		let getDiagnosticsCalled = false;
+		// @ts-ignore
+		vscode.languages.getDiagnostics = (uri?: vscode.Uri) => {
+			getDiagnosticsCalled = true;
+			return [
+				{
+					severity: vscode.DiagnosticSeverity.Error,
+					message: 'Type string is not assignable to number',
+					range: new vscode.Range(new vscode.Position(10, 5), new vscode.Position(10, 20)),
+					source: 'typescript',
+					code: '2322'
+				}
+			] as any;
+		};
+
+		const originalRouteMethod = Router.prototype.route;
+		let routeTurn = 0;
+		let lastReceivedToolContent = '';
+
+		Router.prototype.route = async (recs, messages, tools, options) => {
+			if (routeTurn === 0) {
+				routeTurn++;
+				return {
+					content: 'Proposing write_file',
+					toolCalls: [
+						{
+							id: 'tc-diagnostics-test',
+							type: 'function',
+							function: {
+								name: 'write_file',
+								arguments: JSON.stringify({ path: 'test_diagnostics.txt', content: 'invalid code' }),
+							},
+						},
+					],
+				};
+			}
+			const toolMessage = messages.find(m => m.role === 'tool' && m.tool_call_id === 'tc-diagnostics-test');
+			if (toolMessage) {
+				lastReceivedToolContent = toolMessage.content || '';
+			}
+			return { content: 'Task completed' };
+		};
+
+		const mockRequest: any = {
+			prompt: 'write invalid code',
+			command: 'coding',
+			references: [],
+		};
+		const mockContext: any = {
+			history: [],
+		};
+		const mockResponseStream: any = {
+			markdown: () => mockResponseStream,
+			progress: () => mockResponseStream,
+		};
+		const mockToken: any = {
+			isCancellationRequested: false,
+			onCancellationRequested: () => ({ dispose: () => {} }),
+		};
+
+		const originalExecute = AgentExecutor.execute;
+		// @ts-ignore
+		AgentExecutor.execute = async (toolName: string, args: any, agentCwd: string) => {
+			return { result: 'Success writing code' };
+		};
+
+		try {
+			await handleChatRequest(
+				mockRequest,
+				mockContext,
+				mockResponseStream,
+				mockToken,
+				mockSm as SecretsManager,
+				registry,
+				{ ...config, defaultMode: 'agent' },
+				async () => 3
+			);
+
+			assert.strictEqual(getDiagnosticsCalled, true, 'Should query vscode.languages.getDiagnostics');
+			assert.ok(lastReceivedToolContent.includes('[LINT / COMPILATION ERRORS DETECTED]'), 'Should contain diagnostics header');
+			assert.ok(lastReceivedToolContent.includes('Type string is not assignable to number'), 'Should contain error message');
+			assert.ok(lastReceivedToolContent.includes('Line 11, Col 6: [typescript]'), 'Should contain formatted line, col, and source');
+		} finally {
+			vscode.workspace.getConfiguration = originalGetConfiguration;
+			vscode.languages.getDiagnostics = originalGetDiagnostics;
+			Router.prototype.route = originalRouteMethod;
+			AgentExecutor.execute = originalExecute;
+		}
+	});
+
+	test('CerebrasProvider should gracefully fall back to offline models on listModels authentication failure', async () => {
+		const originalFetch = global.fetch;
+		(global as any).fetch = async (url: string, init?: any) => {
+			return {
+				ok: false,
+				status: 401,
+				statusText: 'Unauthorized',
+				text: async () => '{"error":{"message":"API key does not exist or is inactive"}}'
+			} as any;
+		};
+
+		try {
+			const provider = new CerebrasProvider(['invalid-key']);
+			const models = await provider.listModels();
+			assert.ok(models.length > 0, 'Should fall back and return models');
+			const allAvailable = models.every(m => m.available === true);
+			assert.strictEqual(allAvailable, true, 'Fallback models should be marked as available');
+		} finally {
+			global.fetch = originalFetch;
+		}
+	});
+
+	test('Router should prioritize Tier 1 and retry them round-robin before falling back to Tier 2', async () => {
+		Router.prototype.route = originalRoute;
+
+		let chatAttempts = 0;
+		let tier2Called = false;
+
+		const mockProviderTier1: any = {
+			name: 'groq',
+			isConfigured: () => true,
+			getCooldownRemainingMs: () => 0,
+			chat: async (modelId: string, messages: any, tools: any, context: any, options: any) => {
+				if (chatAttempts === 0) {
+					chatAttempts++;
+					const err = new Error('Rate limit exceeded (429): {"error":{"retry_after_seconds": 1}}');
+					(err as any).status = 429;
+					(err as any).retryAfter = 1;
+					throw err;
+				}
+				chatAttempts++;
+				return { content: 'Groq Succeeded!' };
+			}
+		};
+
+		const mockProviderTier2: any = {
+			name: 'nvidia',
+			isConfigured: () => true,
+			getCooldownRemainingMs: () => 0,
+			chat: async (modelId: string, messages: any, tools: any, context: any, options: any) => {
+				tier2Called = true;
+				return { content: 'Nvidia Succeeded!' };
+			}
+		};
+
+		const router = new Router([mockProviderTier1, mockProviderTier2]);
+
+		const recommendations: any[] = [
+			{
+				model: {
+					id: 'nvidia/llama-3.1-405b',
+					provider: 'nvidia',
+					contextLength: 128000,
+					capabilities: { coding: 9, reasoning: 9 }
+				},
+				rank: 1,
+				reason: 'Tier 2 Model'
+			},
+			{
+				model: {
+					id: 'llama-3.3-70b-versatile',
+					provider: 'groq',
+					contextLength: 128000,
+					capabilities: { coding: 7, reasoning: 7 }
+				},
+				rank: 2,
+				reason: 'Tier 1 Model'
+			}
+		];
+
+		const messages: any[] = [{ role: 'user', content: 'hello' }];
+
+		const result = await router.route(recommendations, messages);
+
+		assert.strictEqual(chatAttempts, 2, 'Should attempt Tier 1 twice');
+		assert.strictEqual(tier2Called, false, 'Should not have called Tier 2');
+		assert.strictEqual(result.content, 'Groq Succeeded!');
+	});
+
+	test('Router should prioritize Google provider as Tier 1', async () => {
+		Router.prototype.route = originalRoute;
+
+		let chatAttempts = 0;
+		let tier2Called = false;
+
+		const mockProviderTier1: any = {
+			name: 'google',
+			isConfigured: () => true,
+			getCooldownRemainingMs: () => 0,
+			chat: async (modelId: string, messages: any, tools: any, context: any, options: any) => {
+				if (chatAttempts === 0) {
+					chatAttempts++;
+					const err = new Error('Rate limit exceeded (429): {"error":{"retry_after_seconds": 1}}');
+					(err as any).status = 429;
+					(err as any).retryAfter = 1;
+					throw err;
+				}
+				chatAttempts++;
+				return { content: 'Google Gemini Succeeded!' };
+			}
+		};
+
+		const mockProviderTier2: any = {
+			name: 'nvidia',
+			isConfigured: () => true,
+			getCooldownRemainingMs: () => 0,
+			chat: async (modelId: string, messages: any, tools: any, context: any, options: any) => {
+				tier2Called = true;
+				return { content: 'Nvidia Succeeded!' };
+			}
+		};
+
+		const router = new Router([mockProviderTier1, mockProviderTier2]);
+
+		const recommendations: any[] = [
+			{
+				model: {
+					id: 'nvidia/llama-3.1-405b',
+					provider: 'nvidia',
+					contextLength: 128000,
+					capabilities: { coding: 9, reasoning: 9 }
+				},
+				rank: 1,
+				reason: 'Tier 2 Model'
+			},
+			{
+				model: {
+					id: 'gemini-2.5-pro',
+					provider: 'google',
+					contextLength: 1000000,
+					capabilities: { coding: 9, reasoning: 10 }
+				},
+				rank: 2,
+				reason: 'Tier 1 Model (Google)'
+			}
+		];
+
+		const messages: any[] = [{ role: 'user', content: 'hello' }];
+
+		const result = await router.route(recommendations, messages);
+
+		assert.strictEqual(chatAttempts, 2, 'Should attempt Tier 1 twice');
+		assert.strictEqual(tier2Called, false, 'Should not have called Tier 2');
+		assert.strictEqual(result.content, 'Google Gemini Succeeded!');
+	});
+
+	test('should automatically suggest commit message and summary when a modified file is saved', async () => {
+		const cp = require('child_process');
+		const originalExec = cp.exec;
+		const originalRouteMethod = Router.prototype.route;
+		const originalShowInfo = vscode.window.showInformationMessage;
+
+		const workspaceFolders = vscode.workspace.workspaceFolders;
+		if (!workspaceFolders || workspaceFolders.length === 0) {
+			return;
+		}
+		const rootPath = workspaceFolders[0].uri.fsPath;
+
+		const testFilePath = path.join(rootPath, 'test-auto-save-commit.txt');
+		fs.writeFileSync(testFilePath, 'initial content');
+
+		const cfg = vscode.workspace.getConfiguration('modelpilot');
+		await cfg.update('autoGenerateCommitMessageOnSave', true, vscode.ConfigurationTarget.Workspace);
+
+		let execCommandsRun: string[] = [];
+		cp.exec = (cmd: string, options: any, callback: any) => {
+			execCommandsRun.push(cmd);
+			if (cmd.includes('git status')) {
+				callback(null, ' M test-auto-save-commit.txt');
+			} else if (cmd.includes('git diff')) {
+				callback(null, 'diff --git a/test-auto-save-commit.txt b/test-auto-save-commit.txt\n--- a/test-auto-save-commit.txt\n+++ b/test-auto-save-commit.txt\n@@ -1 +1 @@\n-initial content\n+modified content');
+			} else if (cmd.includes('git add') && cmd.includes('git commit')) {
+				callback(null, '[master abc123f] feat(test): update file');
+			} else {
+				callback(null, '');
+			}
+		};
+
+		let routeCalled = false;
+		Router.prototype.route = async (recs, messages, tools, options) => {
+			routeCalled = true;
+			return {
+				content: JSON.stringify({
+					commitMessage: 'feat(test): auto-generated from save',
+					summary: 'Updated test-auto-save-commit.txt'
+				})
+			};
+		};
+
+		let showInfoMessageCalled = false;
+		let showInfoMessageText = '';
+		let showInfoMessageResolve: any;
+		const showInfoPromise = new Promise<void>(resolve => {
+			showInfoMessageResolve = resolve;
+		});
+
+		(vscode.window as any).showInformationMessage = async (msg: string, ...items: string[]) => {
+			showInfoMessageCalled = true;
+			showInfoMessageText = msg;
+			setTimeout(() => {
+				showInfoMessageResolve();
+			}, 10);
+			return 'Commit Now';
+		};
+
+		const originalGetExtension = vscode.extensions.getExtension;
+		let mockInputBoxValue = '';
+		const mockGitExtension = {
+			exports: {
+				getAPI: () => ({
+					repositories: [
+						{
+							rootUri: vscode.Uri.file(rootPath),
+							inputBox: {
+								set value(v: string) {
+									mockInputBoxValue = v;
+								},
+								get value() {
+									return mockInputBoxValue;
+								}
+							}
+						}
+					]
+				})
+			}
+		};
+		Object.defineProperty(vscode.extensions, 'getExtension', {
+			value: (id: string) => {
+				if (id === 'vscode.git') {
+					return mockGitExtension;
+				}
+				return originalGetExtension.call(vscode.extensions, id);
+			},
+			configurable: true
+		});
+
+		try {
+			const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(testFilePath));
+			const editor = await vscode.window.showTextDocument(doc);
+			await editor.edit(editBuilder => {
+				editBuilder.insert(new vscode.Position(0, 0), 'modified ');
+			});
+			await doc.save();
+
+			await showInfoPromise;
+
+			assert.ok(routeCalled, 'AI Router should have been called');
+			assert.ok(showInfoMessageCalled, 'Information notification should have been shown');
+			assert.ok(showInfoMessageText.includes('feat(test): auto-generated from save'), 'Suggested commit message should be in notification');
+			assert.ok(showInfoMessageText.includes('Updated test-auto-save-commit.txt'), 'Summary should be in notification');
+			assert.strictEqual(mockInputBoxValue, 'feat(test): auto-generated from save', 'Git commit input box should have been populated');
+
+			const commitCmd = execCommandsRun.find(c => c.includes('git commit'));
+			assert.ok(commitCmd, 'Should run git commit command');
+			assert.ok(commitCmd.includes('feat(test): auto-generated from save'));
+		} finally {
+			try {
+				fs.unlinkSync(testFilePath);
+			} catch {}
+			await cfg.update('autoGenerateCommitMessageOnSave', undefined, vscode.ConfigurationTarget.Workspace);
+			cp.exec = originalExec;
+			Router.prototype.route = originalRouteMethod;
+			(vscode.window as any).showInformationMessage = originalShowInfo;
+			Object.defineProperty(vscode.extensions, 'getExtension', {
+				value: originalGetExtension,
+				configurable: true
+			});
+		}
+	});
+
+	test('should include custom instructions from settings and workspace files in system prompt', async () => {
+		const originalGetConfiguration = vscode.workspace.getConfiguration;
+		const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+		if (!root) { return; }
+
+		// Write mock files
+		const copilotInstructionsPath = path.join(root, '.github', 'copilot-instructions.md');
+		const modelpilotInstructionsPath = path.join(root, '.github', 'modelpilot-instructions.md');
+		const modelpilotRootInstructionsPath = path.join(root, '.modelpilot-instructions.md');
+
+		if (!fs.existsSync(path.join(root, '.github'))) {
+			fs.mkdirSync(path.join(root, '.github'), { recursive: true });
+		}
+		fs.writeFileSync(copilotInstructionsPath, 'Copilot file rules');
+		fs.writeFileSync(modelpilotInstructionsPath, 'Modelpilot file rules');
+		fs.writeFileSync(modelpilotRootInstructionsPath, 'Modelpilot root file rules');
+
+		// Mock configuration
+		// @ts-ignore
+		vscode.workspace.getConfiguration = (section?: string) => {
+			if (section === 'modelpilot') {
+				return {
+					get: (key: string, defaultValue?: any) => {
+						if (key === 'customInstructions') { return 'Setting rules'; }
+						return defaultValue;
+					}
+				};
+			}
+			return originalGetConfiguration(section);
+		};
+
+		let systemPrompt = '';
+		const originalRouteMethod = Router.prototype.route;
+		Router.prototype.route = async (recs, messages, tools, options) => {
+			systemPrompt = messages.find(m => m.role === 'system')?.content || '';
+			return { content: 'Custom instructions handled' };
+		};
+
+		const mockRequest: any = {
+			prompt: 'hello',
+			references: []
+		};
+		const mockContext: any = { history: [] };
+		const mockResponseStream: any = {
+			markdown: () => mockResponseStream,
+			progress: () => mockResponseStream
+		};
+		const mockToken: any = {
+			isCancellationRequested: false,
+			onCancellationRequested: () => ({ dispose: () => {} })
+		};
+
+		try {
+			await handleChatRequest(
+				mockRequest,
+				mockContext,
+				mockResponseStream,
+				mockToken,
+				mockSm as SecretsManager,
+				registry,
+				config,
+				async () => 3
+			);
+
+			assert.ok(systemPrompt.includes('[CUSTOM INSTRUCTIONS]'), 'System prompt should contain custom instructions section');
+			assert.ok(systemPrompt.includes('Setting rules'), 'System prompt should contain settings instructions');
+			assert.ok(systemPrompt.includes('Copilot file rules'), 'System prompt should contain copilot file instructions');
+			assert.ok(systemPrompt.includes('Modelpilot file rules'), 'System prompt should contain modelpilot file instructions');
+			assert.ok(systemPrompt.includes('Modelpilot root file rules'), 'System prompt should contain modelpilot root instructions');
+		} finally {
+			vscode.workspace.getConfiguration = originalGetConfiguration;
+			Router.prototype.route = originalRouteMethod;
+			try {
+				if (fs.existsSync(copilotInstructionsPath)) { fs.unlinkSync(copilotInstructionsPath); }
+				if (fs.existsSync(modelpilotInstructionsPath)) { fs.unlinkSync(modelpilotInstructionsPath); }
+				if (fs.existsSync(modelpilotRootInstructionsPath)) { fs.unlinkSync(modelpilotRootInstructionsPath); }
+			} catch {}
+		}
+	});
+
+	test('should include custom instructions from settings and workspace files in inline chat system prompt', async () => {
+		const originalGetConfiguration = vscode.workspace.getConfiguration;
+		const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+		if (!root) { return; }
+
+		const copilotInstructionsPath = path.join(root, '.github', 'copilot-instructions.md');
+		if (!fs.existsSync(path.join(root, '.github'))) {
+			fs.mkdirSync(path.join(root, '.github'), { recursive: true });
+		}
+		fs.writeFileSync(copilotInstructionsPath, 'Copilot file rules for inline');
+
+		// Mock configuration
+		// @ts-ignore
+		vscode.workspace.getConfiguration = (section?: string) => {
+			if (section === 'modelpilot') {
+				return {
+					get: (key: string, defaultValue?: any) => {
+						if (key === 'customInstructions') { return 'Setting rules for inline'; }
+						return defaultValue;
+					}
+				};
+			}
+			return originalGetConfiguration(section);
+		};
+
+		const originalRoute = Router.prototype.route;
+		let inlineSystemPrompt = '';
+		// @ts-ignore
+		Router.prototype.route = async (recs, messages, tools, options) => {
+			inlineSystemPrompt = messages.find(m => m.role === 'system')?.content || '';
+			return { content: 'inline response' };
+		};
+
+		// Mock text editor
+		const testFilePath = path.join(root, 'test-inline-instructions.txt');
+		fs.writeFileSync(testFilePath, 'original text');
+
+		try {
+			const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(testFilePath));
+			const editor = await vscode.window.showTextDocument(doc);
+			editor.selection = new vscode.Selection(new vscode.Position(0, 0), new vscode.Position(0, 8));
+
+			await vscode.commands.executeCommand('modelpilot.inlineChat', 'change to uppercase');
+
+			assert.ok(inlineSystemPrompt.includes('[CUSTOM INSTRUCTIONS]'), 'Inline system prompt should contain custom instructions section');
+			assert.ok(inlineSystemPrompt.includes('Setting rules for inline'), 'Inline system prompt should contain settings instructions');
+			assert.ok(inlineSystemPrompt.includes('Copilot file rules for inline'), 'Inline system prompt should contain copilot file instructions');
+		} finally {
+			vscode.workspace.getConfiguration = originalGetConfiguration;
+			Router.prototype.route = originalRoute;
+			try {
+				if (fs.existsSync(testFilePath)) { fs.unlinkSync(testFilePath); }
+				if (fs.existsSync(copilotInstructionsPath)) { fs.unlinkSync(copilotInstructionsPath); }
+			} catch {}
+		}
+	});
 });
+

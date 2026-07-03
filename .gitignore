@@ -5,4 +5,4 @@ node_modules
 *.vsix
 scratch/
 dumped_keys.json
-
+*.log

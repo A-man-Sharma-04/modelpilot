@@ -19,6 +19,7 @@ BEFORE ACTING:
 TOOL USAGE:
 - When asked to write, create, build, implement, edit, or fix code: use 'create_file' or 'write_file' directly. Do not explain what you would write — write it.
 - When editing existing files: use 'read_file' first to get current content, then 'write_file' with the full modified content. Never write partial files.
+- File tools (read_file, write_file, create_file, delete_file, list_directory) resolve paths relative to the current Cwd (stateful subdirectory). If Cwd is "my-project", a tool call to write_file with path "package.json" targets "my-project/package.json". Do NOT prepend "my-project/" to the path to avoid duplicate nesting like "my-project/my-project/package.json". To target files in the workspace root or other folders when inside a subdirectory Cwd, use relative upward paths (e.g. "../package.json").
 - For terminal commands: use non-interactive flags always (e.g. 'npm init -y', 'apt-get install -y', 'git clone --quiet'). Never run commands that prompt for input — stdin is unavailable.
 - For 'search_workspace': use it to locate symbols, function names, or imports before assuming their location.
 
@@ -140,6 +141,17 @@ Follow these instructions to ensure high-quality, reliable, and parseable output
   * Consider downstream effects of every change.
   * Prefer explicit over implicit.
   * Leave code cleaner than they found it.
+
+7. GIT & PROJECT CREATION PROTOCOLS:
+- If "git" is not present in "Available tools" in the [WORKSPACE CONTEXT], completely skip all Git commands.
+- Verify Git configuration (user.name and user.email) before executing git commit. If Git is not configured on the system, skip Git operations (commit, init, etc.) rather than configuring fake/dummy values.
+- Only run git init and make initial commits when scaffolding/creating a new multi-file project from scratch (and only if git is installed and configured). Never run git commands for standalone single-file creations or when not explicitly requested.
+- Always create a language/stack-appropriate .gitignore (e.g., node_modules/ for JS/TS) when scaffolding projects.
+- Never stage or commit credentials, secrets, or configuration files containing passwords/tokens (like .env, secrets.json, credentials, .pem, .key). Add them to .gitignore immediately.
+- Run git status and verify the diff before committing to ensure no private customer data or secrets are being committed.
+- Never run git push or publish commands without explicit instructions.
+- Standard Project File Naming: Name files strictly based on framework standard names (e.g. package.json, tsconfig.json, extension.ts, .gitignore, README.md). Do not invent names like "green-theme-extension.ts" unless requested.
+- Dependency Installation & Types: Scaffolding a project from scratch requires running package installer commands (e.g. "npm install" or "npm install --save-dev @types/vscode" inside the project subdirectory) so TS compiler checks resolve and types like 'vscode' are available.
 `;
 
 export function isGreetingOrChitchat(text: string): boolean {
@@ -172,7 +184,7 @@ export function isGreetingOrChitchat(text: string): boolean {
 
 	// Smart chitchat heuristic
 	const isGeneralQuestion = /^(what is|who is|explain|tell me about|how do i|how does|why is|why do|what does)\b/i.test(cleaned);
-	const mentionsWorkspace = /\b(file|folder|code|directory|project|workspace|repo|run|compile|test|build|error|debug|terminal|shell|command|function|class|method|variable|import|require)\b/i.test(cleaned);
+	const mentionsWorkspace = /\b(file|folder|code|directory|project|workspace|repo|repository|git|initialize|init|run|compile|test|build|error|debug|terminal|shell|command|function|class|method|variable|import|require)\b/i.test(cleaned);
 	if (isGeneralQuestion && !mentionsWorkspace) {
 		return true;
 	}
@@ -514,11 +526,30 @@ export function parseRawArgsFallback(name: string, rawArgs: string): string {
 }
 
 export function cleanToolCallTags(text: string): string {
-	const blockRegex = /<(use_tool|_tool|tool)\b[^>]*>([\s\S]*?)(?:<\/\1>|$)/gi;
-	let cleaned = text.replace(blockRegex, '');
+	let cleaned = text;
 
+	// 0. Strip thinking tags from reasoning models (e.g. DeepSeek R1, Qwen)
+	cleaned = cleaned.replace(/<think>[\s\S]*?(?:<\/think>|$)/gi, '');
+
+	// 1. Strip complete use_tool blocks: <use_tool>...</use_tool>
+	const blockRegex = /<(use_tool|_tool|tool)\b[^>]*>[\s\S]*?(?:<\/\1>|$)/gi;
+	cleaned = cleaned.replace(blockRegex, '');
+
+	// 2. Strip any standalone/remaining tool-related XML tags
 	const tagRegex = /<\/?(use_tool|_tool|tool|name|arguments)\b[^>]*>/gi;
 	cleaned = cleaned.replace(tagRegex, '');
+
+	// 3. Strip JSON tool calls
+	const knownTools = [
+		'read_file', 'write_file', 'create_file', 'delete_file',
+		'search_workspace', 'list_directory', 'get_open_files', 'run_terminal_command'
+	];
+	for (const tool of knownTools) {
+		const regex1 = new RegExp(`\\{\\s*(?:[^{}]|\\{[^{}]*\\})*?"(?:name|tool|action|command)"\\s*:\\s*"${tool}"\\s*(?:[^{}]|\\{[^{}]*\\})*?\\}`, 'gi');
+		cleaned = cleaned.replace(regex1, '');
+		const regex2 = new RegExp(`\\{\\s*(?:[^{}]|\\{[^{}]*\\})*?"name"\\s*:\\s*"${tool}"\\s*(?:[^{}]|\\{[^{}]*\\})*?\\}`, 'gi');
+		cleaned = cleaned.replace(regex2, '');
+	}
 
 	return cleaned.trim();
 }
@@ -606,12 +637,37 @@ export function parseTextToolCalls(text: string): ToolCall[] {
 	// 2. Strip XML matches from text to prevent duplicate parsing of JSON inside XML arguments
 	let remainingText = text.replace(blockRegex, '');
 
-	// 3. Scan remaining text for raw JSON tool calls
-	const jsonObjects = extractJsonObjects(remainingText);
 	const knownTools = [
 		'read_file', 'write_file', 'create_file', 'delete_file',
 		'search_workspace', 'list_directory', 'get_open_files', 'run_terminal_command'
 	];
+
+	// 2.5. Scan remaining text for tool name followed by JSON: e.g. run_terminal_command: {...}
+	for (const toolName of knownTools) {
+		const regex = new RegExp(`${toolName}\\s*:?\\s*(\\{[\\s\\S]*?\\})`, 'gi');
+		let m;
+		while ((m = regex.exec(remainingText)) !== null) {
+			try {
+				const cleaned = cleanJsonString(m[1]);
+				const args = JSON.parse(cleaned);
+				toolCalls.push({
+					id: `call_${toolName}_${index++}_${crypto.randomBytes(4).toString('hex')}`,
+					type: 'function',
+					function: {
+						name: toolName,
+						arguments: JSON.stringify(args)
+					}
+				});
+				// Remove it from remainingText so it's not parsed as raw text
+				remainingText = remainingText.replace(m[0], '');
+			} catch {
+				// Ignore
+			}
+		}
+	}
+
+	// 3. Scan remaining text for raw JSON tool calls
+	const jsonObjects = extractJsonObjects(remainingText);
 
 	for (const obj of jsonObjects) {
 		let name = '';
@@ -625,6 +681,9 @@ export function parseTextToolCalls(text: string): ToolCall[] {
 			args = obj.arguments || obj.parameters || obj.args || obj;
 		} else if (obj.action && typeof obj.action === 'string' && knownTools.includes(obj.action)) {
 			name = obj.action;
+			args = obj.arguments || obj.parameters || obj.args || obj;
+		} else if (obj.command && typeof obj.command === 'string' && knownTools.includes(obj.command)) {
+			name = obj.command;
 			args = obj.arguments || obj.parameters || obj.args || obj;
 		} else if (obj.function && typeof obj.function === 'object' && obj.function.name && typeof obj.function.name === 'string' && knownTools.includes(obj.function.name)) {
 			name = obj.function.name;
@@ -660,7 +719,7 @@ export function parseTextToolCalls(text: string): ToolCall[] {
 }
 
 export function findFirstToolTag(text: string): number {
-	const tags = ['<use_tool', '<_tool', '<tool'];
+	const tags = ['<use_tool', '<_tool', '<tool', '<think'];
 	let firstIndex = -1;
 	for (const tag of tags) {
 		const idx = text.toLowerCase().indexOf(tag);
@@ -679,11 +738,18 @@ export function getSafeStreamLength(text: string): number {
 		return firstToolTagIdx;
 	}
 
+	// Find first JSON tool call start
+	const jsonStartRegex = /\{\s*"(type|name|tool|action|function|command)"/i;
+	const jsonMatch = jsonStartRegex.exec(text);
+	if (jsonMatch) {
+		return jsonMatch.index;
+	}
+
 	const lower = text.toLowerCase();
 	const lastOpenBracket = lower.lastIndexOf('<');
 	if (lastOpenBracket !== -1 && lastOpenBracket >= text.length - 10) {
 		const suffix = lower.slice(lastOpenBracket);
-		const possibleTags = ['<use_tool', '<_tool', '<tool'];
+		const possibleTags = ['<use_tool', '<_tool', '<tool', '<think'];
 		for (const pt of possibleTags) {
 			if (pt.startsWith(suffix)) {
 				return lastOpenBracket;
@@ -792,3 +858,133 @@ export function extractCodeBlocksWithPaths(text: string): CodeBlockEntry[] {
 
 	return results;
 }
+
+/**
+ * Shell language identifiers that indicate a terminal command code block.
+ */
+const SHELL_LANGUAGES = new Set(['bash', 'sh', 'zsh', 'powershell', 'cmd', 'shell', 'console', 'terminal']);
+
+/**
+ * Injects "▶ Run in Terminal" clickable command links after shell code blocks
+ * in the given markdown text. The link triggers the modelpilot.runInTerminal command.
+ */
+export function injectRunInTerminalButtons(text: string): string {
+	// Match fenced code blocks with a shell language tag
+	return text.replace(
+		/```(bash|sh|zsh|powershell|cmd|shell|console|terminal)\s*\n([\s\S]*?)```/gi,
+		(fullMatch, lang, code) => {
+			const command = code.trim();
+			if (!command) { return fullMatch; }
+			// Encode the command as a JSON arg for the VS Code command URI
+			const encodedArgs = encodeURIComponent(JSON.stringify([command]));
+			const runLink = `\n\n[▶ Run in Terminal](command:modelpilot.runInTerminal?${encodedArgs})`;
+			return fullMatch + runLink;
+		}
+	);
+}
+
+/**
+ * Checks if the given language identifier represents a shell/terminal language.
+ */
+export function isShellLanguage(lang: string): boolean {
+	return SHELL_LANGUAGES.has(lang.toLowerCase());
+}
+
+/**
+ * A stateful transformer to inject "Run in Terminal" buttons into a stream of markdown text.
+ */
+export class StreamButtonInjector {
+	private writtenIndex = 0;
+	private insideShell = false;
+	private shellStartIdx = 0;
+	private currentShellCommand = '';
+
+	constructor(private readonly response: { markdown(value: string | vscode.MarkdownString): void }) {}
+
+	private writeMarkdown(text: string) {
+		if (!text) {
+			return;
+		}
+		const md = new vscode.MarkdownString(text);
+		md.isTrusted = { enabledCommands: ['modelpilot.runInTerminal'] };
+		this.response.markdown(md);
+	}
+
+	public write(accumulated: string) {
+		while (this.writtenIndex < accumulated.length) {
+			if (this.insideShell) {
+				const closeIdx = accumulated.indexOf('```', this.shellStartIdx);
+				if (closeIdx !== -1) {
+					const shellContent = accumulated.slice(this.writtenIndex, closeIdx);
+					this.currentShellCommand += shellContent;
+					
+					const command = this.currentShellCommand.trim();
+					const encodedArgs = encodeURIComponent(JSON.stringify([command]));
+					const button = `\n\n[▶ Run in Terminal](command:modelpilot.runInTerminal?${encodedArgs})`;
+					
+					this.writeMarkdown(shellContent + '```' + button);
+					this.writtenIndex = closeIdx + 3;
+					this.insideShell = false;
+					this.currentShellCommand = '';
+				} else {
+					const lastBacktick = accumulated.lastIndexOf('`');
+					const shouldBuffer = lastBacktick !== -1 && lastBacktick >= accumulated.length - 3;
+					const safeLength = shouldBuffer ? accumulated.length - 3 : accumulated.length;
+					if (safeLength > this.writtenIndex) {
+						const chunk = accumulated.slice(this.writtenIndex, safeLength);
+						this.currentShellCommand += chunk;
+						this.writeMarkdown(chunk);
+						this.writtenIndex = safeLength;
+					}
+					break;
+				}
+			} else {
+				const nextBackticks = accumulated.indexOf('```', this.writtenIndex);
+				if (nextBackticks !== -1) {
+					if (nextBackticks > this.writtenIndex) {
+						this.writeMarkdown(accumulated.slice(this.writtenIndex, nextBackticks));
+					}
+					
+					const afterBackticks = accumulated.slice(nextBackticks + 3);
+					const lineEnd = afterBackticks.indexOf('\n');
+					if (lineEnd !== -1) {
+						const langTag = afterBackticks.slice(0, lineEnd).trim().toLowerCase();
+						const isShell = ['bash', 'sh', 'zsh', 'powershell', 'cmd', 'shell', 'console', 'terminal'].includes(langTag);
+						
+						this.writeMarkdown('```' + afterBackticks.slice(0, lineEnd + 1));
+						this.writtenIndex = nextBackticks + 3 + lineEnd + 1;
+						
+						if (isShell) {
+							this.insideShell = true;
+							this.shellStartIdx = this.writtenIndex;
+							this.currentShellCommand = '';
+						}
+					} else {
+						this.writtenIndex = nextBackticks;
+						break;
+					}
+				} else {
+					const lastBacktick = accumulated.lastIndexOf('`');
+					const shouldBuffer = lastBacktick !== -1 && lastBacktick >= accumulated.length - 3;
+					const safeLength = shouldBuffer ? accumulated.length - 3 : accumulated.length;
+					if (safeLength > this.writtenIndex) {
+						this.writeMarkdown(accumulated.slice(this.writtenIndex, safeLength));
+						this.writtenIndex = safeLength;
+					}
+					break;
+				}
+			}
+		}
+	}
+
+	public flush(accumulated: string) {
+		if (this.writtenIndex < accumulated.length) {
+			const remaining = accumulated.slice(this.writtenIndex);
+			const cleaned = cleanToolCallTags(remaining);
+			this.writeMarkdown(cleaned);
+			this.writtenIndex = accumulated.length;
+		}
+	}
+}
+
+

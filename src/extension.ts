@@ -16,7 +16,7 @@ import { Router } from './engine/Router';
 import { SecretsManager, ProviderName } from './secrets';
 import { EXPERT_PROFILES, DEFAULT_EXPERT_ID, getExpertProfile } from './data/expertProfiles';
 import { Message } from './providers/IProvider';
-import { AgentExecutor, AGENT_TOOLS_METADATA } from './engine/AgentExecutor';
+import { AgentExecutor, AGENT_TOOLS_METADATA, getWorkspacePath } from './engine/AgentExecutor';
 import {
 	TOOLS_INSTRUCTION,
 	MODEL_RELIABILITY_INSTRUCTIONS,
@@ -26,7 +26,9 @@ import {
 	cleanToolCallTags,
 	parseTextToolCalls,
 	getSafeStreamLength,
-	extractCodeBlocksWithPaths
+	extractCodeBlocksWithPaths,
+	injectRunInTerminalButtons,
+	StreamButtonInjector
 } from './engine/chatHelpers';
 import { decompose, inferCategory, estimateTokens, estimateMessagesTokens } from './engine/TaskDecomposer';
 import { SYSTEM_PROMPT, MODE_PROMPTS, buildWorkspaceContext } from './participant/systemPrompt';
@@ -86,6 +88,7 @@ function getConfig() {
 		defaultExpert: cfg.get<string>('defaultExpert', DEFAULT_EXPERT_ID),
 		defaultMode: cfg.get<string>('defaultMode', 'default'),
 		maxAutoFixRetries: cfg.get<number>('maxAutoFixRetries', 3),
+		autoGenerateCommitMessageOnSave: cfg.get<boolean>('autoGenerateCommitMessageOnSave', false),
 	};
 }
 
@@ -220,19 +223,12 @@ function buildCopilotMessages(
 export function getApprovalMode(): 'default' | 'bypass' | 'autopilot' {
 	const userMode = vscode.workspace.getConfiguration('modelpilot').get<string>('approvalMode', 'default');
 	
-	// Fallback/respect VS Code global settings if user mode is set to 'default'
 	if (userMode === 'default') {
 		const vscodeDefault = vscode.workspace.getConfiguration('chat.permissions').get<string>('default');
-		const globalAutoApprove = vscode.workspace.getConfiguration('chat.tools.global').get<boolean>('autoApprove');
-		
-		if (globalAutoApprove === true || vscodeDefault === 'bypassApprovals' || vscodeDefault === 'autoApprove') {
-			return 'bypass';
-		}
 		if (vscodeDefault === 'autopilot') {
 			return 'autopilot';
 		}
 	}
-	
 	return userMode as 'default' | 'bypass' | 'autopilot';
 }
 
@@ -259,6 +255,111 @@ async function listDirFiles(dirPath: string, maxDepth: number, currentDepth = 0)
 		// Ignore errors
 	}
 	return result;
+}
+
+async function generateFollowups(
+	userPrompt: string,
+	assistantResponse: string,
+	router: Router,
+	recs: any[]
+): Promise<vscode.ChatFollowup[]> {
+	const isTestMode = typeof (global as any).it === 'function' || !!process.env.VSCODE_TEST_OPTIONS;
+	if (isTestMode && process.env.MODELPILOT_GENERATE_FOLLOWUPS !== 'true') {
+		return [];
+	}
+
+	try {
+		const speedRecs = recs.filter(r => r.model && r.model.capabilities && r.model.capabilities.speed >= 5);
+		const modelToUse = speedRecs.length > 0 ? [speedRecs[0]] : recs.slice(0, 1);
+		if (modelToUse.length === 0) {
+			return [];
+		}
+
+		const prompt = `You are a helpful assistant. Based on the user's prompt and your response, generate exactly 3 short, context-aware follow-up questions or next steps that the user might want to ask next.
+Each suggestion must be extremely concise (under 8 words) and directly related to the topic.
+Format your response ONLY as a JSON array of strings, with no markdown formatting, no explanation, and no other text.
+
+Example:
+[
+  "Explain how this works",
+  "Add error handling",
+  "Write a unit test"
+]
+
+User Prompt: "${userPrompt.replace(/"/g, '\\"')}"
+Assistant Response: "${assistantResponse.slice(0, 1000).replace(/"/g, '\\"')}"`;
+
+		const result = await router.route(
+			modelToUse,
+			[
+				{ role: 'system', content: 'You are a helpful assistant. Respond ONLY with a JSON array of strings.' },
+				{ role: 'user', content: prompt }
+			],
+			undefined,
+			{
+				stream: false,
+				maxTokens: 100,
+				timeout: 5000
+			}
+		);
+
+		if (result && result.content) {
+			let content = result.content;
+			content = content.replace(/<think>[\s\S]*?(?:<\/think>|$)/gi, '').trim();
+			
+			// Find the first '[' and last ']' to isolate the JSON array
+			const startIdx = content.indexOf('[');
+			const endIdx = content.lastIndexOf(']');
+			if (startIdx !== -1 && endIdx !== -1 && endIdx > startIdx) {
+				content = content.slice(startIdx, endIdx + 1);
+			}
+
+			const cleaned = cleanJsonString(content);
+			const parsed = JSON.parse(cleaned);
+			if (Array.isArray(parsed)) {
+				return parsed.slice(0, 3).map(p => ({ prompt: String(p) }));
+			}
+		}
+	} catch (e) {
+		// Silently fail and return empty if followups generation fails
+	}
+	return [];
+}
+
+async function loadCustomInstructions(): Promise<string> {
+	let instructions = '';
+
+	// 1. Read from settings configuration
+	try {
+		const config = vscode.workspace.getConfiguration('modelpilot');
+		const configVal = config.get<string>('customInstructions');
+		if (configVal && configVal.trim()) {
+			instructions += configVal.trim() + '\n\n';
+		}
+	} catch {}
+
+	// 2. Read from workspace instructions files
+	if (vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length > 0) {
+		const root = vscode.workspace.workspaceFolders[0].uri.fsPath;
+		const candidateFiles = [
+			path.join(root, '.github', 'copilot-instructions.md'),
+			path.join(root, '.github', 'modelpilot-instructions.md'),
+			path.join(root, '.modelpilot-instructions.md')
+		];
+
+		for (const filePath of candidateFiles) {
+			try {
+				if (fs.existsSync(filePath)) {
+					const content = await fs.promises.readFile(filePath, 'utf8');
+					if (content && content.trim()) {
+						instructions += `[From file: ${path.basename(filePath)}]\n` + content.trim() + '\n\n';
+					}
+				}
+			} catch {}
+		}
+	}
+
+	return instructions.trim();
 }
 
 export async function handleChatRequest(
@@ -337,8 +438,197 @@ export async function handleChatRequest(
 		return;
 	}
 
+	// /terminal command — generate terminal commands and provide "Run in Terminal" buttons
+	if (request.command === 'terminal') {
+		if (!request.prompt.trim()) {
+			response.markdown('Please describe what you want to do in the terminal. For example:\n\n`/terminal list all files in the current directory`');
+			return;
+		}
+
+		response.progress('Generating terminal command...');
+
+		try {
+			const keys = await sm.getAll();
+			const providers = [
+				new NvidiaProvider(keys.nvidia),
+				new OpenRouterProvider(keys.openrouter),
+				new GroqProvider(keys.groq),
+				new CerebrasProvider(keys.cerebras),
+				new GoogleProvider(keys.google),
+			];
+			const router = new Router(providers);
+			const recommender = new Recommender(registry);
+			let recs = recommender.recommend('coding');
+			if (recs.length === 0) {
+				response.progress('Refreshing models...');
+				await refreshModels();
+				recs = recommender.recommend('coding');
+			}
+			if (recs.length === 0) {
+				response.markdown('❌ No available models configured. Please add an API key first using **ModelPilot: Add API Key**.');
+				return;
+			}
+
+			const osPlatform = os.platform();
+			const shellPath = vscode.env.shell;
+			const terminalSystemPrompt = `You are a terminal command assistant. The user is on ${osPlatform} using shell: ${shellPath}.
+
+Your task is to suggest the right terminal command(s) for the user's request.
+
+RULES:
+- Output each command inside a fenced code block with the appropriate shell language tag (e.g. \`\`\`bash or \`\`\`powershell).
+- If multiple commands are needed, output each in its own code block with a brief explanation between them.
+- Keep explanations short and helpful.
+- Use commands appropriate for the user's OS and shell.
+- Never suggest destructive commands (rm -rf /, format, etc.) without explicit user confirmation.
+- If the request is ambiguous, provide the most common interpretation and mention alternatives.`;
+
+			const terminalResult = await router.route(recs, [
+				{ role: 'system', content: terminalSystemPrompt },
+				{ role: 'user', content: request.prompt }
+			]);
+
+			let content = terminalResult.content || '';
+
+			// Strip thinking tags from reasoning models
+			content = content.replace(/<think>[\s\S]*?(?:<\/think>|$)/gi, '');
+			content = content.trim();
+
+			if (content) {
+				// Inject "Run in Terminal" buttons after shell code blocks
+				const withButtons = injectRunInTerminalButtons(content);
+				const md = new vscode.MarkdownString(withButtons);
+				md.isTrusted = { enabledCommands: ['modelpilot.runInTerminal'] };
+				response.markdown(md);
+
+				// Generate smart follow-up suggestions
+				const followups = await generateFollowups(request.prompt, content, router, recs);
+				return {
+					followups
+				};
+			} else {
+				response.markdown('⚠️ ModelPilot returned an empty response. Please try rephrasing your request.');
+			}
+		} catch (err: any) {
+			response.markdown(`❌ **Terminal command generation failed:** ${err.message || String(err)}`);
+		}
+		return;
+	}
+
+	if (request.command === 'commit') {
+		response.progress('Analyzing git changes...');
+		try {
+			const workspaceFolders = vscode.workspace.workspaceFolders;
+			if (!workspaceFolders || workspaceFolders.length === 0) {
+				response.markdown('❌ **Error:** No workspace folder is open.');
+				return;
+			}
+			const rootPath = workspaceFolders[0].uri.fsPath;
+			const cp = require('child_process');
+
+			// Check for changes (tracked and untracked)
+			const diffStatus = await new Promise<string>((resolve) => {
+				cp.exec('git status --porcelain', { cwd: rootPath }, (err: any, stdout: string) => {
+					resolve(stdout.trim());
+				});
+			});
+
+			if (!diffStatus) {
+				response.markdown('ℹ️ **No changes detected.** Your repository is clean.');
+				return;
+			}
+
+			// Get the diff of staged & unstaged changes
+			const gitDiff = await new Promise<string>((resolve) => {
+				cp.exec('git diff HEAD', { cwd: rootPath }, (err: any, stdout: string) => {
+					resolve(stdout.trim());
+				});
+			});
+
+			if (!gitDiff) {
+				response.markdown('ℹ️ **No modifications detected in tracked files.**');
+				return;
+			}
+
+			// Truncate the diff if it's extremely long to avoid exceeding context window
+			const maxDiffLength = 8000;
+			const truncatedDiff = gitDiff.length > maxDiffLength
+				? gitDiff.slice(0, maxDiffLength) + '\n\n... [diff truncated for length]'
+				: gitDiff;
+
+			response.progress('Generating commit message...');
+
+			const keys = await sm.getAll();
+			const providers = [
+				new NvidiaProvider(keys.nvidia),
+				new OpenRouterProvider(keys.openrouter),
+				new GroqProvider(keys.groq),
+				new CerebrasProvider(keys.cerebras),
+				new GoogleProvider(keys.google),
+			];
+			const router = new Router(providers);
+			const recommender = new Recommender(registry);
+			let recs = recommender.recommend('coding', 100, 200);
+			if (recs.length === 0) {
+				response.progress('Refreshing models...');
+				await refreshModels();
+				recs = recommender.recommend('coding', 100, 200);
+			}
+
+			if (recs.length === 0) {
+				response.markdown('❌ No available models configured. Please add an API key first.');
+				return;
+			}
+
+			const commitSystemPrompt = `You are a git commit message generator. Based on the git diff provided, write a single-line commit message following the Conventional Commits specification (e.g. 'feat(terminal): add run button'). Do NOT include any explanations, markdown formatting, or extra text. Output ONLY the commit message line itself.`;
+
+			const commitResult = await router.route(recs, [
+				{ role: 'system', content: commitSystemPrompt },
+				{ role: 'user', content: `Here is the git diff:\n\n\`\`\`diff\n${truncatedDiff}\n\`\`\`` }
+			]);
+
+			let commitMessage = commitResult.content || '';
+			commitMessage = commitMessage.replace(/<think>[\s\S]*?(?:<\/think>|$)/gi, '');
+			commitMessage = commitMessage.trim();
+			// Remove surrounding quotes or backticks if model added them
+			if (commitMessage.startsWith('"') && commitMessage.endsWith('"')) {
+				commitMessage = commitMessage.slice(1, -1).trim();
+			}
+			if (commitMessage.startsWith('`') && commitMessage.endsWith('`')) {
+				commitMessage = commitMessage.slice(1, -1).trim();
+			}
+
+			if (!commitMessage) {
+				response.markdown('⚠️ **Failed to generate a commit message.**');
+				return;
+			}
+
+			response.progress('Committing changes...');
+			
+			// Commit the changes
+			const commitOutput = await new Promise<{ success: boolean; output: string }>((resolve) => {
+				cp.exec(`git commit -a -m "${commitMessage.replace(/"/g, '\\"')}"`, { cwd: rootPath }, (err: any, stdout: string, stderr: string) => {
+					if (err) {
+						resolve({ success: false, output: stderr || stdout || err.message });
+					} else {
+						resolve({ success: true, output: stdout });
+					}
+				});
+			});
+
+			if (commitOutput.success) {
+				response.markdown(`🚀 **Successfully committed changes!**\n\n**Commit Message:**\n\`${commitMessage}\`\n\n\`\`\`\n${commitOutput.output.trim()}\n\`\`\``);
+			} else {
+				response.markdown(`❌ **Failed to commit changes:**\n\n\`\`\`\n${commitOutput.output.trim()}\n\`\`\``);
+			}
+		} catch (err: any) {
+			response.markdown(`❌ **Commit generation failed:** ${err.message || String(err)}`);
+		}
+		return;
+	}
+
 	// Try decomposition first (only if no explicit slash command is entered, or if command is not a specific expert command)
-	const isSlashCommand = request.command && request.command !== 'general' && request.command !== 'ask' && request.command !== 'plan' && request.command !== 'agent';
+	const isSlashCommand = request.command && request.command !== 'general' && request.command !== 'ask' && request.command !== 'plan' && request.command !== 'agent' && request.command !== 'terminal' && request.command !== 'commit';
 	const decomposed = isSlashCommand ? null : decompose(request.prompt);
 
 	if (decomposed && !token.isCancellationRequested) {
@@ -407,6 +697,25 @@ export async function handleChatRequest(
 	}
 }
 
+function getFileDiagnostics(filePath: string): string {
+	try {
+		const fileUri = vscode.Uri.file(filePath);
+		const diagnostics = vscode.languages.getDiagnostics(fileUri);
+		const errors = diagnostics.filter(d => d.severity === vscode.DiagnosticSeverity.Error);
+		if (errors.length === 0) {
+			return '';
+		}
+		return errors.map(d => {
+			const line = d.range.start.line + 1;
+			const col = d.range.start.character + 1;
+			const sourceStr = d.source ? ` [${d.source}]` : '';
+			return `- Line ${line}, Col ${col}:${sourceStr} ${d.message}`;
+		}).join('\n');
+	} catch {
+		return '';
+	}
+}
+
 export async function executeSingleTask(
 	request: vscode.ChatRequest,
 	chatContext: vscode.ChatContext,
@@ -458,6 +767,7 @@ export async function executeSingleTask(
 		return;
 	}
 
+	const fileDiagnosticsRetryCounts = new Map<string, number>();
 	let agentCwd = forcedCwd !== undefined ? forcedCwd : '.';
 	if (forcedCwd === undefined) {
 		for (let i = chatContext.history.length - 1; i >= 0; i--) {
@@ -511,9 +821,115 @@ export async function executeSingleTask(
 		}
 	}
 
+	// In-text file reference parsing (mimicking Copilot's #file and auto-path detection)
+	const parsedPaths = new Set<string>();
+	const patterns = [
+		/#file:([^\s]+)/g,
+		/#([a-zA-Z0-9_\-\.\/]+)/g,
+		/`([a-zA-Z0-9_\-\.\/]+)`/g
+	];
+
+	for (const pattern of patterns) {
+		let match;
+		pattern.lastIndex = 0;
+		while ((match = pattern.exec(request.prompt)) !== null) {
+			const candidate = match[1];
+			// Basic validation to avoid false positives for simple hashtags
+			if (candidate && (candidate.includes('.') || candidate.includes('/') || candidate.includes('\\'))) {
+				parsedPaths.add(candidate);
+			}
+		}
+	}
+
+	if (vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length > 0) {
+		const root = vscode.workspace.workspaceFolders[0].uri.fsPath;
+		for (const rawPath of parsedPaths) {
+			const candidates = [
+				path.resolve(root, agentCwd || '.', rawPath),
+				path.resolve(root, rawPath)
+			];
+			if (path.isAbsolute(rawPath)) {
+				candidates.unshift(rawPath);
+			}
+
+			for (const absPath of candidates) {
+				try {
+					const stat = await fs.promises.stat(absPath);
+					if (stat.isFile()) {
+						const relPath = path.relative(root, absPath);
+						// Avoid duplicate files if already attached via UI references
+						if (referencedFilesContext.includes(`--- File: ${relPath} ---`)) {
+							break;
+						}
+
+						const fileContent = await fs.promises.readFile(absPath, 'utf8');
+						const truncated = fileContent.length > 5000 
+							? fileContent.slice(0, 2500) + '\n\n[Content truncated]\n\n' + fileContent.slice(-2500)
+							: fileContent;
+						referencedFilesContext += `\n\n--- File: ${relPath} (referenced in-text) ---\n${truncated}\n`;
+						break;
+					}
+				} catch {
+					// Continue to next candidate
+				}
+			}
+		}
+	}
+
+	// Automatic Codebase Context Retrieval (mimicking @workspace)
+	let codebaseContext = '';
+	if (!isGreetingOrChitchat(request.prompt) && vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length > 0) {
+		const promptWords = request.prompt.toLowerCase()
+			.replace(/[^a-z0-9\s-_]/g, ' ')
+			.split(/\s+/)
+			.filter(w => w.length >= 4 && !['this', 'that', 'with', 'from', 'have', 'your', 'please', 'help', 'code', 'file', 'folder', 'show', 'find', 'search', 'explain', 'what', 'here', 'want'].includes(w));
+
+		if (promptWords.length > 0) {
+			const root = vscode.workspace.workspaceFolders[0].uri.fsPath;
+			const matchedFiles = new Set<string>();
+
+			try {
+				const allFiles = await vscode.workspace.findFiles('**/*', '**/node_modules/**');
+				for (const file of allFiles) {
+					const baseName = path.basename(file.fsPath).toLowerCase();
+					for (const word of promptWords) {
+						if (baseName.includes(word)) {
+							matchedFiles.add(file.fsPath);
+						}
+					}
+				}
+
+				const filesToAttach = Array.from(matchedFiles).slice(0, 3);
+				if (filesToAttach.length > 0) {
+					const attachedList: string[] = [];
+					for (const filePath of filesToAttach) {
+						try {
+							const relPath = path.relative(root, filePath);
+							// Avoid duplicate files if already attached
+							if (referencedFilesContext.includes(relPath)) {
+								continue;
+							}
+							const content = await fs.promises.readFile(filePath, 'utf8');
+							const truncated = content.length > 3000 ? content.slice(0, 3000) + '\n... [truncated]' : content;
+							codebaseContext += `\n\n--- File: ${relPath} (found via automatic codebase search) ---\n${truncated}\n`;
+							attachedList.push(relPath);
+						} catch {
+							// Ignore unreadable files
+						}
+					}
+					if (attachedList.length > 0) {
+						response.progress(`Used codebase references: ${attachedList.map(f => path.basename(f)).join(', ')}`);
+					}
+				}
+			} catch {
+				// Ignore errors in finding files
+			}
+		}
+	}
+
 	let finalPrompt = request.prompt;
-	if (referencedFilesContext) {
-		finalPrompt = `[Referenced Context]:\n${referencedFilesContext}\n\n[User Prompt]:\n${finalPrompt}`;
+	if (referencedFilesContext || codebaseContext) {
+		finalPrompt = `[Referenced Context]:\n${referencedFilesContext}${codebaseContext}\n\n[User Prompt]:\n${finalPrompt}`;
 	}
 
 	let expertId = forcedExpertId !== undefined ? forcedExpertId : globalExpertProfile;
@@ -553,12 +969,20 @@ export async function executeSingleTask(
 
 	const initialTokensEstimate = estimateTokens(request.prompt) + chatContext.history.reduce((acc, h) => acc + (h && typeof h === 'object' && 'prompt' in h ? estimateTokens((h as any).prompt) : 0), 0);
 	const recommender = new Recommender(registry);
-	let recs = recommender.recommend(expertId, 10, initialTokensEstimate);
+	let recs = recommender.recommend(expertId, 100, initialTokensEstimate);
+
+	const debugLogPath = '/home/kali/modelpilot/openai_compatible_debug.log';
+	try {
+		fs.appendFileSync(debugLogPath, `[${new Date().toISOString()}] [ROUTER] Expert: ${expertId}. Recommendations: ${JSON.stringify(recs.map(r => ({ model: `${r.model.provider}::${r.model.id}`, capabilities: r.model.capabilities })))}\n`);
+	} catch {}
 
 	if (recs.length === 0) {
 		response.progress('No models loaded. Discovered keys, attempting to refresh models...');
 		await refreshModels();
-		recs = recommender.recommend(expertId, 10, initialTokensEstimate);
+		recs = recommender.recommend(expertId, 100, initialTokensEstimate);
+		try {
+			fs.appendFileSync(debugLogPath, `[${new Date().toISOString()}] [ROUTER] Post-refresh Recommendations: ${JSON.stringify(recs.map(r => ({ model: `${r.model.provider}::${r.model.id}`, capabilities: r.model.capabilities })))}\n`);
+		} catch {}
 	}
 
 	if (recs.length === 0) {
@@ -579,15 +1003,17 @@ export async function executeSingleTask(
 		return;
 	}
 
-	let isChitchat = false;
-	if (operationMode === 'plan') {
-		isChitchat = false;
-	} else if (operationMode === 'agent') {
-		isChitchat = false;
-	} else if (request.command && request.command !== 'general' && request.command !== 'ask') {
-		isChitchat = false;
+	let isChitchat = isGreetingOrChitchat(request.prompt);
+	if (isChitchat) {
+		operationMode = 'ask';
 	} else {
-		isChitchat = isGreetingOrChitchat(request.prompt);
+		if (operationMode === 'plan') {
+			isChitchat = false;
+		} else if (operationMode === 'agent') {
+			isChitchat = false;
+		} else if (request.command && request.command !== 'general' && request.command !== 'ask') {
+			isChitchat = false;
+		}
 	}
 
 	// Smart intent classification using fast LLM if keys/models are available, no command was explicitly specified, not already classified as chitchat, and forcedExpertId is not provided
@@ -703,7 +1129,7 @@ ${classificationContext}`;
 	} else if (operationMode === 'ask') {
 		useTools = !isChitchat;
 	}
-	recs = isChitchat ? recommender.recommendForSpeed(10) : recommender.recommend(expertId, 10, initialTokensEstimate);
+	recs = isChitchat ? recommender.recommendForSpeed(100) : recommender.recommend(expertId, 100, initialTokensEstimate);
 
 	// Build workspace context
 	const projectStack: string[] = [];
@@ -756,6 +1182,11 @@ ${classificationContext}`;
 		baseSystemPrompt = `${baseSystemPrompt}\n\n${modePrompt}`;
 	}
 
+	const customInstructions = await loadCustomInstructions();
+	if (customInstructions) {
+		baseSystemPrompt = `${baseSystemPrompt}\n\n[CUSTOM INSTRUCTIONS]\n${customInstructions}`;
+	}
+
 	// Build unified system prompt if tools are used
 	let finalSystemPrompt = baseSystemPrompt;
 	if (useTools) {
@@ -774,7 +1205,9 @@ ${classificationContext}`;
 - File and Folder Context: Sincerely respect all attached file/folder references. Do not make mistakes with file names or paths. Perform only the exact tasks requested on those files.`;
 
 		systemPromptParts.push(envContext);
-		systemPromptParts.push(TOOLS_INSTRUCTION);
+		if (useTools) {
+			systemPromptParts.push(TOOLS_INSTRUCTION);
+		}
 
 		const workspaceContext = getWorkspaceContextText();
 		if (workspaceContext) {
@@ -806,14 +1239,25 @@ ${classificationContext}`;
 	finalSystemPrompt = finalSystemPrompt + '\n\n' + MODEL_RELIABILITY_INSTRUCTIONS;
 	apiMessages.push({ role: 'system', content: finalSystemPrompt });
 
+	// Identify the index of the last assistant response in the history
+	let lastResponseIndex = -1;
+	for (let i = 0; i < chatContext.history.length; i++) {
+		if (chatContext.history[i] && typeof chatContext.history[i] === 'object' && 'response' in chatContext.history[i]) {
+			lastResponseIndex = i;
+		}
+	}
+
 	// Translate history turns
-	for (const turn of chatContext.history) {
+	for (let i = 0; i < chatContext.history.length; i++) {
+		const turn = chatContext.history[i];
 		if (turn && typeof turn === 'object' && 'prompt' in turn) {
 			apiMessages.push({ role: 'user', content: (turn as any).prompt });
 		} else if (turn && typeof turn === 'object' && 'response' in turn) {
 			const metadata = (turn as any).result?.metadata;
+			const isLastResponse = i === lastResponseIndex;
+
 			if (metadata && Array.isArray(metadata.messages)) {
-				if (apiMessages.length > 0) {
+				if (apiMessages.length > 0 && apiMessages[apiMessages.length - 1].role === 'user') {
 					apiMessages.pop();
 				}
 				apiMessages.push(...metadata.messages);
@@ -863,6 +1307,7 @@ ${classificationContext}`;
 	let maxIterations = 15;
 	const autoFixRetryCounts = new Map<string, number>();
 	const maxAutoFixRetries = getConfig().maxAutoFixRetries;
+	let lastAssistantText = '';
 
 	try {
 		while (loopIteration < maxIterations) {
@@ -889,7 +1334,9 @@ ${classificationContext}`;
 - File and Folder Context: Sincerely respect all attached file/folder references. Do not make mistakes with file names or paths. Perform only the exact tasks requested on those files.`;
 
 				systemPromptParts.push(envContext);
-				systemPromptParts.push(TOOLS_INSTRUCTION);
+				if (useTools) {
+					systemPromptParts.push(TOOLS_INSTRUCTION);
+				}
 
 				const workspaceContext = getWorkspaceContextText();
 				if (workspaceContext) {
@@ -901,6 +1348,8 @@ ${classificationContext}`;
 				} else if (operationMode === 'ask') {
 					systemPromptParts.push(`[Mode Context: Ask Mode]\nYou are operating in Ask Mode. Your primary goal is to answer the user's question. You have access to tools to inspect the workspace or system (e.g. read files, list directories, search, or run non-destructive commands). Use them to gather information to answer the question. Avoid modifying files or writing new code to the workspace unless the user explicitly asks you to do so.`);
 				}
+				const goalReminder = `[ACTIVE TASK GOAL]\nYou are currently working on the user's request:\n"${finalPrompt}"\nAlways keep this main goal in mind. Do not get distracted by intermediate tool failures or empty search results. Your ultimate objective is to fulfill this request.`;
+				systemPromptParts.push(goalReminder);
 
 				currentSystemPrompt = systemPromptParts.join('\n\n');
 			} else if (operationMode === 'plan') {
@@ -947,8 +1396,8 @@ ${classificationContext}`;
 			for (let i = apiMessages.length - 1; i >= 0; i--) {
 				if (apiMessages[i].role === 'tool') {
 					toolMessageCount++;
-					if (toolMessageCount > 4) {
-						const maxPruneChars = 500;
+					if (toolMessageCount > 2) {
+						const maxPruneChars = 800;
 						if (apiMessages[i].content && apiMessages[i].content.length > maxPruneChars) {
 							apiMessages[i].content = apiMessages[i].content.slice(0, maxPruneChars) + '\n\n[Older tool output truncated to save context tokens]';
 						}
@@ -963,6 +1412,7 @@ ${classificationContext}`;
 			let accumulatedText = '';
 			let insideCodeBlock = false;
 			let backtickCount = 0;
+			const streamButtonInjector = new StreamButtonInjector(response);
 
 			const startTime = Date.now();
 			let fallbackCount = 0;
@@ -974,6 +1424,8 @@ ${classificationContext}`;
 					stream: config.stream,
 					onChunk: (text) => {
 						accumulatedText += text;
+						// Strip completed think blocks so content after them can stream
+						accumulatedText = accumulatedText.replace(/<think>[\s\S]*?<\/think>/gi, '');
 						const safeLength = getSafeStreamLength(accumulatedText);
 
 						if (useTools) {
@@ -999,17 +1451,17 @@ ${classificationContext}`;
 							// If inside a code block, hold — don't stream anything
 							backtickCount = currentBacktickCount;
 						} else {
-							// Non-agent mode: stream everything normally
-							if (safeLength > streamedTextLength) {
-								const cleanTextToStream = accumulatedText.slice(streamedTextLength, safeLength);
-								response.markdown(cleanTextToStream);
+							// Non-agent mode: stream everything, injecting buttons statefully
+							if (config.stream) {
+								const safeText = accumulatedText.slice(0, safeLength);
+								streamButtonInjector.write(safeText);
 								streamedTextLength = safeLength;
 							}
 						}
 					},
 					maxTokens: 4096,
 					abortSignal: abortController.signal,
-					timeout: useTools ? 60000 : 10000,
+					timeout: useTools ? 60000 : 30000,
 				},
 				(from, to, reason) => {
 					fallbackCount++;
@@ -1022,12 +1474,28 @@ ${classificationContext}`;
 				await recordUsage(chatResult, apiMessages, globalState, latencyMs, fallbackCount);
 			}
 
+			// Flush any remaining text in the stream
+			if (!useTools && config.stream) {
+				streamButtonInjector.flush(accumulatedText);
+			}
+
 			const assistantText = chatResult.content;
+			lastAssistantText = assistantText;
 			const toolCalls = chatResult.toolCalls && chatResult.toolCalls.length > 0
 				? chatResult.toolCalls
 				: parseTextToolCalls(assistantText);
 
 			const cleanedContent = cleanToolCallTags(assistantText);
+
+			if (!config.stream) {
+				if (useTools) {
+					response.markdown(cleanedContent);
+				} else {
+					const md = new vscode.MarkdownString(injectRunInTerminalButtons(cleanedContent));
+					md.isTrusted = { enabledCommands: ['modelpilot.runInTerminal'] };
+					response.markdown(md);
+				}
+			}
 
 			const assistantMessage: Message = {
 				role: 'assistant',
@@ -1200,9 +1668,51 @@ ${classificationContext}`;
 							message = `ModelPilot wants to run tool '${toolName}' with arguments: ${argsStr}. Do you approve?`;
 						}
 
-						response.progress(`Awaiting approval for executing tool: ${toolName}...`);
-						const choice = await vscode.window.showWarningMessage(message, { modal: true }, 'Approve', 'Reject');
-						approved = (choice === 'Approve');
+						let choice: string | undefined;
+						if (toolName === 'write_file' || toolName === 'create_file') {
+							let leftUri: vscode.Uri;
+							let rightUri: vscode.Uri;
+							const filename = path.basename(toolArgs.path);
+							const absPath = getWorkspacePath(toolArgs.path, agentCwd);
+							const previewUri = vscode.Uri.parse(`modelpilot-preview:${absPath.replace(/\\/g, '/')}`);
+
+							diffProvider.set(previewUri, toolArgs.content);
+
+							if (toolName === 'write_file') {
+								leftUri = vscode.Uri.file(absPath);
+								rightUri = previewUri;
+							} else {
+								const emptyUri = vscode.Uri.parse(`modelpilot-preview:empty-file`);
+								diffProvider.set(emptyUri, '');
+								leftUri = emptyUri;
+								rightUri = previewUri;
+							}
+
+							await vscode.commands.executeCommand(
+								'vscode.diff',
+								leftUri,
+								rightUri,
+								`Proposed Changes: ${filename}`
+							);
+
+							response.progress(`Awaiting approval for ${toolName === 'write_file' ? 'modifying' : 'creating'} file: ${toolArgs.path}...`);
+							choice = await vscode.window.showWarningMessage(
+								`ModelPilot wants to ${toolName === 'write_file' ? 'modify' : 'create'} file '${toolArgs.path}'. Review the proposed changes in the diff editor. Do you approve?`,
+								{ modal: true },
+								'Accept Changes',
+								'Reject'
+							);
+							approved = (choice === 'Accept Changes');
+
+							diffProvider.delete(previewUri);
+							if (toolName === 'create_file') {
+								diffProvider.delete(vscode.Uri.parse(`modelpilot-preview:empty-file`));
+							}
+						} else {
+							response.progress(`Awaiting approval for executing tool: ${toolName}...`);
+							choice = await vscode.window.showWarningMessage(message, { modal: true }, 'Approve', 'Reject');
+							approved = (choice === 'Approve');
+						}
 					}
 				}
 
@@ -1218,6 +1728,29 @@ ${classificationContext}`;
 
 						if (['write_file', 'create_file', 'delete_file'].includes(toolName)) {
 							autoFixRetryCounts.clear();
+						}
+
+						if (['write_file', 'create_file'].includes(toolName)) {
+							const sleepTime = isTestMode ? 50 : 1200;
+							await new Promise(resolve => setTimeout(resolve, sleepTime));
+							try {
+								const absPath = getWorkspacePath(toolArgs.path, agentCwd);
+								const diagnosticsText = getFileDiagnostics(absPath);
+								if (diagnosticsText && maxAutoFixRetries > 0) {
+									const fileKey = toolArgs.path;
+									const currentRetries = fileDiagnosticsRetryCounts.get(fileKey) || 0;
+									if (currentRetries < maxAutoFixRetries) {
+										fileDiagnosticsRetryCounts.set(fileKey, currentRetries + 1);
+										const attempt = currentRetries + 1;
+										response.progress(`⚡ Self-correction: compiling & analyzing diagnostics (attempt ${attempt}/${maxAutoFixRetries})...`);
+										result += `\n\n[LINT / COMPILATION ERRORS DETECTED]\nVS Code detected the following compilation/type/lint errors in the modified file:\n${diagnosticsText}\n\nYou MUST fix these compilation errors before proceeding. Use write_file to correct the file.\nSelf-correction attempt: ${attempt} of ${maxAutoFixRetries}`;
+									}
+								} else {
+									fileDiagnosticsRetryCounts.delete(toolArgs.path);
+								}
+							} catch {
+								// ignore path resolution issues
+							}
 						}
 
 						// Self-correction: detect failed terminal commands and inject a correction hint
@@ -1258,11 +1791,14 @@ ${classificationContext}`;
 			throw new Error('Maximum agent loop iterations reached.');
 		}
 
+		const followups = await generateFollowups(request.prompt, lastAssistantText, router, recs);
+
 		return {
 			metadata: {
 				messages: apiMessages.slice(currentTurnStartIndex),
 				agentCwd
-			}
+			},
+			followups
 		};
 	} catch (err: any) {
 		console.error('executeSingleTask caught error:', err);
@@ -1273,6 +1809,29 @@ ${classificationContext}`;
 		}
 	}
 }
+
+class ModelPilotDiffProvider implements vscode.TextDocumentContentProvider {
+	private _contents = new Map<string, string>();
+	private _onDidChange = new vscode.EventEmitter<vscode.Uri>();
+	readonly onDidChange = this._onDidChange.event;
+
+	provideTextDocumentContent(uri: vscode.Uri): string {
+		return this._contents.get(uri.toString()) || '';
+	}
+
+	set(uri: vscode.Uri, content: string) {
+		this._contents.set(uri.toString(), content);
+		this._onDidChange.fire(uri);
+	}
+
+	delete(uri: vscode.Uri) {
+		if (this._contents.delete(uri.toString())) {
+			this._onDidChange.fire(uri);
+		}
+	}
+}
+
+const diffProvider = new ModelPilotDiffProvider();
 
 export function activate(context: vscode.ExtensionContext) {
 	// Detect available system tools asynchronously in the background after activation
@@ -1312,6 +1871,10 @@ export function activate(context: vscode.ExtensionContext) {
 			}
 		});
 	}, 100);
+
+	context.subscriptions.push(
+		vscode.workspace.registerTextDocumentContentProvider('modelpilot-preview', diffProvider)
+	);
 
 	const sm = new SecretsManager(context.secrets);
 
@@ -1390,10 +1953,48 @@ export function activate(context: vscode.ExtensionContext) {
 		participant,
 
 		vscode.commands.registerCommand('modelpilot.newChat', async () => {
-			await vscode.commands.executeCommand('workbench.action.chat.open', {
-				query: '@modelpilot ',
-				isPartialQuery: true
-			});
+			const oldClipboard = await vscode.env.clipboard.readText();
+			try {
+				// Open and focus the chat input
+				await vscode.commands.executeCommand('workbench.action.chat.open');
+				// Wait a brief moment for the chat input to gain focus
+				await new Promise(resolve => setTimeout(resolve, 150));
+
+				// Select all text in the chat input and copy it
+				await vscode.commands.executeCommand('editor.action.selectAll');
+				await vscode.commands.executeCommand('editor.action.clipboardCopyAction');
+
+				// Wait a tiny bit for the clipboard write to complete
+				await new Promise(resolve => setTimeout(resolve, 50));
+				const copiedText = await vscode.env.clipboard.readText();
+
+				// If it already has @modelpilot, do nothing
+				if (copiedText.trim().startsWith('@modelpilot')) {
+					// Restore clipboard immediately
+					await vscode.env.clipboard.writeText(oldClipboard);
+					return;
+				}
+
+				// Prepend @modelpilot to the existing text (or start with it if empty)
+				const newText = copiedText.trim() ? `@modelpilot ${copiedText}` : '@modelpilot ';
+				await vscode.env.clipboard.writeText(newText);
+
+				// Paste the new text, overwriting the selected text
+				await vscode.commands.executeCommand('editor.action.clipboardPasteAction');
+			} catch (err) {
+				// Fallback to default behavior if anything fails
+				await vscode.commands.executeCommand('workbench.action.chat.open', {
+					query: '@modelpilot ',
+					isPartialQuery: true
+				});
+			} finally {
+				// Restore the user's original clipboard content after a brief delay
+				setTimeout(async () => {
+					try {
+						await vscode.env.clipboard.writeText(oldClipboard);
+					} catch {}
+				}, 600);
+			}
 		}),
 
 		vscode.commands.registerCommand('modelpilot.showAnalytics', () => {
@@ -1565,7 +2166,97 @@ export function activate(context: vscode.ExtensionContext) {
 		vscode.commands.registerCommand('modelpilot.generateTests', () => {
 			return runInlineAction('Generate robust unit tests for the following code, covering positive, negative, and edge cases');
 		}),
+
+		vscode.commands.registerCommand('modelpilot.inlineChat', () => {
+			return handleInlineChat(vscode.window.activeTextEditor, sm, registry);
+		}),
+
+		vscode.commands.registerCommand('modelpilot.runInTerminal', (command: string) => {
+			if (!command) { return; }
+			let terminal = vscode.window.terminals.find(t => t.name === 'ModelPilot');
+			if (!terminal) {
+				terminal = vscode.window.createTerminal('ModelPilot');
+			}
+			terminal.show(false);
+			terminal.sendText(command);
+		}),
 	);
+
+	if ('onDidStartTerminalShellExecution' in (vscode.window as any)) {
+		const terminalOutputs = new Map<any, string>();
+
+		const cleanTerminalOutput = (raw: string): string => {
+			// Strip OSC (Operating System Command) sequences (like OSC 0, OSC 633, etc.)
+			let cleaned = raw.replace(/[\u001b\u009b]\][^\u0007\u001b]*(?:\u0007|[\u001b]\\)/g, '');
+			// Strip ANSI escape codes
+			cleaned = cleaned.replace(/[\u001b\u009b][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]/g, '');
+			// Normalize carriage returns and other terminal artifacts
+			cleaned = cleaned.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+			// Remove duplicate consecutive empty lines
+			cleaned = cleaned.replace(/\n{3,}/g, '\n\n');
+			return cleaned.trim();
+		};
+
+		context.subscriptions.push(
+			(vscode.window as any).onDidStartTerminalShellExecution(async (e: any) => {
+				const execution = e.execution;
+				if (!execution) {
+					return;
+				}
+				const stream = execution.read();
+				let accumulated = '';
+				terminalOutputs.set(execution, accumulated);
+				try {
+					for await (const chunk of stream) {
+						accumulated += chunk;
+						if (accumulated.length > 10000) {
+							accumulated = accumulated.slice(-10000);
+						}
+						terminalOutputs.set(execution, accumulated);
+					}
+				} catch {
+					// Stream closed or failed
+				}
+			})
+		);
+
+		context.subscriptions.push(
+			(vscode.window as any).onDidEndTerminalShellExecution(async (e: any) => {
+				const execution = e.execution;
+				if (!execution) {
+					return;
+				}
+				const exitCode = e.exitCode;
+				const output = terminalOutputs.get(execution) || '';
+				terminalOutputs.delete(execution);
+
+				if (exitCode !== undefined && exitCode !== 0) {
+					let commandLine = '';
+					if (execution.commandLine && typeof execution.commandLine === 'object') {
+						commandLine = execution.commandLine.value || '';
+					} else if (typeof execution.commandLine === 'string') {
+						commandLine = execution.commandLine;
+					}
+
+					const cleanOutput = cleanTerminalOutput(output);
+
+					const choice = await vscode.window.showErrorMessage(
+						`Terminal command failed: "${commandLine}" (Exit code: ${exitCode})`,
+						'Explain with ModelPilot',
+						'Fix with ModelPilot'
+					);
+
+					if (choice === 'Explain with ModelPilot') {
+						const query = `@modelpilot /ask Explain why this terminal command failed:\nCommand: ${commandLine}\nExit Code: ${exitCode}\nOutput:\n\`\`\`\n${cleanOutput}\n\`\`\``;
+						await vscode.commands.executeCommand('workbench.action.chat.open', { query });
+					} else if (choice === 'Fix with ModelPilot') {
+						const query = `@modelpilot /agent Fix the issue causing this terminal command to fail:\nCommand: ${commandLine}\nExit Code: ${exitCode}\nOutput:\n\`\`\`\n${cleanOutput}\n\`\`\``;
+						await vscode.commands.executeCommand('workbench.action.chat.open', { query });
+					}
+				}
+			})
+		);
+	}
 
 	context.subscriptions.push(
 		vscode.languages.registerCodeActionsProvider(
@@ -1578,6 +2269,162 @@ export function activate(context: vscode.ExtensionContext) {
 				]
 			}
 		)
+	);
+
+	context.subscriptions.push(
+		vscode.workspace.onDidSaveTextDocument(async (document) => {
+			if (document.uri.scheme !== 'file' || document.uri.fsPath.includes('/.git/') || document.uri.fsPath.includes('\\.git\\')) {
+				return;
+			}
+
+			const workspaceFolder = vscode.workspace.getWorkspaceFolder(document.uri);
+			if (!workspaceFolder) {
+				return;
+			}
+			const rootPath = workspaceFolder.uri.fsPath;
+			const filePath = document.uri.fsPath;
+
+			const config = vscode.workspace.getConfiguration('modelpilot');
+			const autoGenerateState = config.get<any>('autoGenerateCommitMessageOnSave');
+
+			if (autoGenerateState === false) {
+				return;
+			}
+
+			const checkModified = await new Promise<boolean>((resolve) => {
+				exec(`git status --porcelain "${filePath}"`, { cwd: rootPath }, (err, stdout) => {
+					if (err) {
+						resolve(false);
+					} else {
+						resolve(stdout.trim().length > 0);
+					}
+				});
+			});
+
+			if (!checkModified) {
+				return;
+			}
+
+			const hasPrompted = context.globalState.get<boolean>('modelpilot.hasPromptedAutoCommitOnSave', false);
+			if (autoGenerateState !== true) {
+				if (hasPrompted) {
+					return;
+				}
+				await context.globalState.update('modelpilot.hasPromptedAutoCommitOnSave', true);
+				const choice = await vscode.window.showInformationMessage(
+					'ModelPilot can automatically generate conventional commit messages and summaries when you save modified files in Git. Would you like to enable this?',
+					'Yes (Always)',
+					'No'
+				);
+				if (choice === 'Yes (Always)') {
+					await config.update('autoGenerateCommitMessageOnSave', true, vscode.ConfigurationTarget.Global);
+				} else {
+					await config.update('autoGenerateCommitMessageOnSave', false, vscode.ConfigurationTarget.Global);
+					return;
+				}
+			}
+
+			const gitDiff = await new Promise<string>((resolve) => {
+				exec(`git diff HEAD -- "${filePath}"`, { cwd: rootPath }, (err, stdout) => {
+					if (err) {
+						resolve('');
+					} else {
+						resolve(stdout.trim());
+					}
+				});
+			});
+
+			if (!gitDiff) {
+				return;
+			}
+
+			const maxDiffLength = 8000;
+			const truncatedDiff = gitDiff.length > maxDiffLength
+				? gitDiff.slice(0, maxDiffLength) + '\n\n... [diff truncated for length]'
+				: gitDiff;
+
+			try {
+				const keys = await sm.getAll();
+				const providers = [
+					new NvidiaProvider(keys.nvidia),
+					new OpenRouterProvider(keys.openrouter),
+					new GroqProvider(keys.groq),
+					new CerebrasProvider(keys.cerebras),
+					new GoogleProvider(keys.google),
+				];
+				const router = new Router(providers);
+				const recommender = new Recommender(registry);
+				let recs = recommender.recommend('coding', 100, 200);
+				if (recs.length === 0) {
+					await refreshModels();
+					recs = recommender.recommend('coding', 100, 200);
+				}
+				if (recs.length === 0) {
+					return;
+				}
+
+				const commitSystemPrompt = `You are a git commit message and diff summary generator. Based on the git diff provided for the single file, do two things:\n1. Write a single-line commit message following the Conventional Commits specification (e.g. 'feat(parser): parse retry-after correctly').\n2. Write a brief (max 2 sentences) summary of the changes made.\n\nFormat your output EXACTLY as a JSON object:\n{\n  "commitMessage": "feat(parser): ...",\n  "summary": "Updated the regex to..."\n}\nDo NOT include any explanations, markdown formatting (no \`\`\`json block wrappers), or extra text outside the JSON object. Output ONLY the raw JSON object itself.`;
+
+				const result = await router.route(recs, [
+					{ role: 'system', content: commitSystemPrompt },
+					{ role: 'user', content: `Here is the git diff:\n\n${truncatedDiff}` }
+				], undefined, { stream: false });
+
+				if (result && result.content) {
+					let content = result.content;
+					content = content.replace(/<think>[\s\S]*?(?:<\/think>|$)/gi, '').trim();
+					const startIdx = content.indexOf('{');
+					const endIdx = content.lastIndexOf('}');
+					if (startIdx !== -1 && endIdx !== -1 && endIdx > startIdx) {
+						content = content.slice(startIdx, endIdx + 1);
+					}
+					const cleaned = cleanJsonString(content);
+					const parsed = JSON.parse(cleaned);
+
+					const commitMessage = (parsed.commitMessage || '').trim();
+					const summary = (parsed.summary || '').trim();
+
+					if (commitMessage) {
+						try {
+							const gitExtension = vscode.extensions.getExtension<any>('vscode.git')?.exports;
+							const gitAPI = gitExtension?.getAPI(1);
+							if (gitAPI && gitAPI.repositories) {
+								const repo = gitAPI.repositories.find((r: any) => {
+									const repoPath = path.normalize(r.rootUri.fsPath).toLowerCase();
+									const docPath = path.normalize(filePath).toLowerCase();
+									return docPath.startsWith(repoPath);
+								});
+								if (repo) {
+									repo.inputBox.value = commitMessage;
+								}
+							}
+						} catch {}
+
+						const cleanMsg = commitMessage.replace(/"/g, '\\"');
+						vscode.window.showInformationMessage(
+							`ModelPilot suggested commit message: "${commitMessage}"\n\nSummary:\n${summary}`,
+							'Commit Now',
+							'Copy to Clipboard'
+						).then(async (selection) => {
+							if (selection === 'Commit Now') {
+								exec(`git add "${filePath}" && git commit -m "${cleanMsg}"`, { cwd: rootPath }, (err, stdout, stderr) => {
+									if (err) {
+										vscode.window.showErrorMessage(`Failed to commit: ${stderr || err.message}`);
+									} else {
+										vscode.window.showInformationMessage(`Successfully committed changes to ${path.basename(filePath)}!`);
+									}
+								});
+							} else if (selection === 'Copy to Clipboard') {
+								await vscode.env.clipboard.writeText(commitMessage);
+								vscode.window.showInformationMessage('Commit message copied to clipboard.');
+							}
+						});
+					}
+				}
+			} catch (e) {
+				// Silently fail
+			}
+		})
 	);
 }
 
@@ -1682,3 +2529,102 @@ function exportChatToMarkdown(chatContext: vscode.ChatContext): string {
 	}
 	return md;
 }
+
+export async function handleInlineChat(
+	editor: vscode.TextEditor | undefined,
+	sm: SecretsManager,
+	registry: ModelRegistry
+) {
+	if (!editor) {
+		vscode.window.showWarningMessage('No active editor found.');
+		return;
+	}
+
+	const selection = editor.selection;
+	const selectedText = editor.document.getText(selection);
+	const languageId = editor.document.languageId;
+
+	const prompt = await vscode.window.showInputBox({
+		title: 'ModelPilot Inline Chat',
+		prompt: selectedText.trim()
+			? 'Describe the changes you want to make to the selected code'
+			: 'Describe the code you want to generate at the cursor',
+		placeHolder: 'e.g., add a try-catch block, or write a fetch function...',
+		ignoreFocusOut: true
+	});
+
+	if (!prompt || !prompt.trim()) {
+		return;
+	}
+
+	await vscode.window.withProgress({
+		location: vscode.ProgressLocation.Notification,
+		title: 'ModelPilot: Generating code...',
+		cancellable: false
+	}, async () => {
+		try {
+			const keys = await sm.getAll();
+			const providers = [
+				new NvidiaProvider(keys.nvidia),
+				new OpenRouterProvider(keys.openrouter),
+				new GroqProvider(keys.groq),
+				new CerebrasProvider(keys.cerebras),
+				new GoogleProvider(keys.google),
+			];
+			const router = new Router(providers);
+
+			const recommender = new Recommender(registry);
+			const recs = recommender.recommend('coding');
+			if (recs.length === 0) {
+				throw new Error('No available models configured. Please add an API key first.');
+			}
+
+			const customInstructions = await loadCustomInstructions();
+			let systemPrompt = `You are ModelPilot, an inline code generator. Your task is to output ONLY the raw code requested by the user.
+NEVER include markdown code block formatting (like \`\`\`typescript), explanations, or conversational text.
+Your entire response will be inserted directly into the editor.
+Language: ${languageId}
+
+If the user provided existing code, apply the requested changes and return the entire updated block.
+If the user did not provide existing code, generate the new code from scratch.`;
+
+			if (customInstructions) {
+				systemPrompt += `\n\n[CUSTOM INSTRUCTIONS]\n${customInstructions}`;
+			}
+
+			const userPrompt = selectedText.trim()
+				? `Existing Code:\n\`\`\`\n${selectedText}\n\`\`\`\n\nRequest: ${prompt}`
+				: `Request: ${prompt}`;
+
+			const response = await router.route(recs, [
+				{ role: 'system', content: systemPrompt },
+				{ role: 'user', content: userPrompt }
+			]);
+
+			let code = response.content || '';
+
+			// Strip thinking process tags if present (e.g. from reasoning models like DeepSeek R1 or Qwen)
+			code = code.replace(/<think>[\s\S]*?(?:<\/think>|$)/gi, '');
+
+			// Strip markdown code block wrappers if the model accidentally included them
+			code = code.replace(/^```[a-zA-Z0-9]*\r?\n/, '');
+			code = code.replace(/\r?\n```$/, '');
+			code = code.trim();
+
+			if (code) {
+				await editor.edit(editBuilder => {
+					if (selection.isEmpty) {
+						editBuilder.insert(selection.active, code);
+					} else {
+						editBuilder.replace(selection, code);
+					}
+				});
+			} else {
+				vscode.window.showWarningMessage('ModelPilot returned an empty response.');
+			}
+		} catch (err: any) {
+			vscode.window.showErrorMessage(`ModelPilot Inline Chat failed: ${err.message}`);
+		}
+	});
+}
+
