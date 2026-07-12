@@ -17,6 +17,7 @@ import { SecretsManager, ProviderName } from './secrets';
 import { EXPERT_PROFILES, DEFAULT_EXPERT_ID, getExpertProfile } from './data/expertProfiles';
 import { Message } from './providers/IProvider';
 import { AgentExecutor, AGENT_TOOLS_METADATA, getWorkspacePath } from './engine/AgentExecutor';
+import { mcpManager } from './engine/McpManager';
 import {
 	TOOLS_INSTRUCTION,
 	MODEL_RELIABILITY_INSTRUCTIONS,
@@ -1416,10 +1417,11 @@ ${classificationContext}`;
 
 			const startTime = Date.now();
 			let fallbackCount = 0;
+			const combinedTools = useTools ? [...AGENT_TOOLS_METADATA, ...mcpManager.getTools()] : undefined;
 			const chatResult = await router.route(
 				recs,
 				apiMessages,
-				useTools ? AGENT_TOOLS_METADATA : undefined,
+				combinedTools,
 				{
 					stream: config.stream,
 					onChunk: (text) => {
@@ -1720,10 +1722,18 @@ ${classificationContext}`;
 				if (approved) {
 					response.progress(`Running tool: ${toolName}...`);
 					try {
-						const execResult = await AgentExecutor.execute(toolName, toolArgs, agentCwd, abortController.signal);
-						result = execResult.result;
-						if (execResult.newCwd !== undefined) {
-							agentCwd = execResult.newCwd;
+						let resultStr = '';
+						let newCwd: string | undefined;
+						if (toolName.startsWith('mcp__')) {
+							resultStr = await mcpManager.execute(toolName, toolArgs);
+						} else {
+							const execResult = await AgentExecutor.execute(toolName, toolArgs, agentCwd, abortController.signal);
+							resultStr = execResult.result;
+							newCwd = execResult.newCwd;
+						}
+						result = resultStr;
+						if (newCwd !== undefined) {
+							agentCwd = newCwd;
 						}
 
 						if (['write_file', 'create_file', 'delete_file'].includes(toolName)) {
@@ -1906,6 +1916,15 @@ export function activate(context: vscode.ExtensionContext) {
 	});
 
 	context.subscriptions.push(statusBarItem, analyticsSub);
+
+	mcpManager.initializeFromConfig();
+	context.subscriptions.push(
+		vscode.workspace.onDidChangeConfiguration(async (e) => {
+			if (e.affectsConfiguration('modelpilot.mcpServers')) {
+				await mcpManager.initializeFromConfig();
+			}
+		})
+	);
 
 	globalExpertProfile = getConfig().defaultExpert;
 
@@ -2437,7 +2456,9 @@ export function activate(context: vscode.ExtensionContext) {
 	);
 }
 
-export function deactivate() { }
+export function deactivate() {
+	mcpManager.dispose();
+}
 
 async function runInlineAction(promptPrefix: string, expertId = 'coding') {
 	const editor = vscode.window.activeTextEditor;

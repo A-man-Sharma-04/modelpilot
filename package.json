@@ -213,6 +213,12 @@
           "default": "",
           "description": "Custom instructions to personalize ModelPilot chat and inline code generation responses (e.g., coding style guidelines, project preferences).",
           "order": 10
+        },
+        "modelpilot.mcpServers": {
+          "type": "object",
+          "default": {},
+          "description": "Configure Model Context Protocol (MCP) servers. The keys are server names, and values are execution configs containing command, args, and optional env.",
+          "order": 11
         }
       }
     },

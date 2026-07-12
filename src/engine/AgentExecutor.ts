@@ -163,7 +163,7 @@ export const AGENT_TOOLS_METADATA = [
 
 export class AgentExecutor {
 	static requiresApproval(toolName: string): boolean {
-		return ['read_file', 'write_file', 'create_file', 'delete_file', 'run_terminal_command'].includes(toolName);
+		return ['read_file', 'write_file', 'create_file', 'delete_file', 'run_terminal_command'].includes(toolName) || toolName.startsWith('mcp__');
 	}
 
 	static async execute(toolName: string, args: any, agentCwd: string, abortSignal?: AbortSignal): Promise<{ result: string; newCwd?: string }> {
