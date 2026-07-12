@@ -113,6 +113,10 @@
       {
         "command": "modelpilot.configureMcpServer",
         "title": "ModelPilot: Configure MCP Server"
+      },
+      {
+        "command": "modelpilot.compressActiveFile",
+        "title": "ModelPilot: Compress Context File & Copy to Clipboard"
       }
     ],
     "keybindings": [
@@ -167,6 +171,12 @@
           "default": true,
           "description": "Stream responses token by token as they arrive.",
           "order": 5
+        },
+        "modelpilot.compressContext": {
+          "type": "boolean",
+          "default": false,
+          "description": "Automatically compress codebase files attached to context (stripping comments/whitespace) to reduce token budget.",
+          "order": 6
         },
         "modelpilot.approvalMode": {
           "type": "string",

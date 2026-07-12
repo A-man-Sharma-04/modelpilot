@@ -987,4 +987,166 @@ export class StreamButtonInjector {
 	}
 }
 
+export function compressCode(code: string, languageId?: string): string {
+	const isPython = languageId === 'python';
+	let result = '';
+	let i = 0;
+
+	let inSingleQuote = false;
+	let inDoubleQuote = false;
+	let inBacktick = false;
+	let inLineComment = false;
+	let inBlockComment = false;
+
+	while (i < code.length) {
+		const char = code[i];
+		const next = code[i + 1] || '';
+
+		if (inLineComment) {
+			if (char === '\n' || char === '\r') {
+				inLineComment = false;
+				result += char;
+			}
+			i++;
+			continue;
+		}
+
+		if (inBlockComment) {
+			if (isPython) {
+				const quoteChar = inDoubleQuote ? '"""' : "'''";
+				if (code.startsWith(quoteChar, i)) {
+					inBlockComment = false;
+					inDoubleQuote = false;
+					inSingleQuote = false;
+					i += 3;
+				} else {
+					if (char === '\n' || char === '\r') {
+						result += char;
+					}
+					i++;
+				}
+			} else {
+				if (char === '*' && next === '/') {
+					inBlockComment = false;
+					i += 2;
+				} else {
+					if (char === '\n' || char === '\r') {
+						result += char;
+					}
+					i++;
+				}
+			}
+			continue;
+		}
+
+		if (inSingleQuote) {
+			if (char === '\\') {
+				result += char + next;
+				i += 2;
+				continue;
+			}
+			if (char === "'") {
+				inSingleQuote = false;
+			}
+			result += char;
+			i++;
+			continue;
+		}
+
+		if (inDoubleQuote) {
+			if (char === '\\') {
+				result += char + next;
+				i += 2;
+				continue;
+			}
+			if (char === '"') {
+				inDoubleQuote = false;
+			}
+			result += char;
+			i++;
+			continue;
+		}
+
+		if (inBacktick) {
+			if (char === '\\') {
+				result += char + next;
+				i += 2;
+				continue;
+			}
+			if (char === '`') {
+				inBacktick = false;
+			}
+			result += char;
+			i++;
+			continue;
+		}
+
+		if (i === 0 && char === '#' && next === '!') {
+			result += char + next;
+			i += 2;
+			continue;
+		}
+
+		if (isPython) {
+			if (code.startsWith('"""', i)) {
+				inBlockComment = true;
+				inDoubleQuote = true;
+				i += 3;
+				continue;
+			}
+			if (code.startsWith("'''", i)) {
+				inBlockComment = true;
+				inSingleQuote = true;
+				i += 3;
+				continue;
+			}
+			if (char === '#') {
+				inLineComment = true;
+				i++;
+				continue;
+			}
+		} else {
+			if (char === '/' && next === '/') {
+				inLineComment = true;
+				i += 2;
+				continue;
+			}
+			if (char === '/' && next === '*') {
+				inBlockComment = true;
+				i += 2;
+				continue;
+			}
+		}
+
+		if (char === "'") {
+			inSingleQuote = true;
+		} else if (char === '"') {
+			inDoubleQuote = true;
+		} else if (char === '`') {
+			inBacktick = true;
+		}
+
+		result += char;
+		i++;
+	}
+
+	const lines = result.split(/\r?\n/);
+	const outputLines: string[] = [];
+	for (const line of lines) {
+		const trimmed = line.trimEnd();
+		if (trimmed.trim() === '') {
+			if (outputLines.length > 0 && outputLines[outputLines.length - 1] !== '') {
+				outputLines.push('');
+			}
+		} else {
+			outputLines.push(trimmed);
+		}
+	}
+	if (outputLines.length > 0 && outputLines[outputLines.length - 1] === '') {
+		outputLines.pop();
+	}
+	return outputLines.join('\n');
+}
+
+
 

@@ -30,7 +30,8 @@ import {
 	getSafeStreamLength,
 	extractCodeBlocksWithPaths,
 	injectRunInTerminalButtons,
-	StreamButtonInjector
+	StreamButtonInjector,
+	compressCode
 } from './engine/chatHelpers';
 import { decompose, inferCategory, estimateTokens, estimateMessagesTokens } from './engine/TaskDecomposer';
 import { SYSTEM_PROMPT, MODE_PROMPTS, buildWorkspaceContext } from './participant/systemPrompt';
@@ -812,7 +813,12 @@ export async function executeSingleTask(
 							const filesList = await listDirFiles(filePath, 3);
 							referencedFilesContext += `\n\n--- Folder: ${relPath} ---\nFolder structure:\n${filesList}\n`;
 						} else {
-							const fileContent = await fs.promises.readFile(filePath, 'utf8');
+							let fileContent = await fs.promises.readFile(filePath, 'utf8');
+							if (vscode.workspace.getConfiguration('modelpilot').get<boolean>('compressContext', false)) {
+								const ext = path.extname(filePath);
+								const lang = ext === '.py' ? 'python' : '';
+								fileContent = compressCode(fileContent, lang);
+							}
 							const truncated = fileContent.length > 5000 
 								? fileContent.slice(0, 2500) + '\n\n[Content truncated]\n\n' + fileContent.slice(-2500)
 								: fileContent;
@@ -867,7 +873,12 @@ export async function executeSingleTask(
 							break;
 						}
 
-						const fileContent = await fs.promises.readFile(absPath, 'utf8');
+						let fileContent = await fs.promises.readFile(absPath, 'utf8');
+						if (vscode.workspace.getConfiguration('modelpilot').get<boolean>('compressContext', false)) {
+							const ext = path.extname(absPath);
+							const lang = ext === '.py' ? 'python' : '';
+							fileContent = compressCode(fileContent, lang);
+						}
 						const truncated = fileContent.length > 5000 
 							? fileContent.slice(0, 2500) + '\n\n[Content truncated]\n\n' + fileContent.slice(-2500)
 							: fileContent;
@@ -914,7 +925,12 @@ export async function executeSingleTask(
 							if (referencedFilesContext.includes(relPath)) {
 								continue;
 							}
-							const content = await fs.promises.readFile(filePath, 'utf8');
+							let content = await fs.promises.readFile(filePath, 'utf8');
+							if (vscode.workspace.getConfiguration('modelpilot').get<boolean>('compressContext', false)) {
+								const ext = path.extname(filePath);
+								const lang = ext === '.py' ? 'python' : '';
+								content = compressCode(content, lang);
+							}
 							const truncated = content.length > 3000 ? content.slice(0, 3000) + '\n... [truncated]' : content;
 							codebaseContext += `\n\n--- File: ${relPath} (found via automatic codebase search) ---\n${truncated}\n`;
 							attachedList.push(relPath);
@@ -2047,6 +2063,27 @@ export function activate(context: vscode.ExtensionContext) {
 				new OllamaProvider(),
 			];
 			ModelArenaPanel.createOrShow(context.extensionUri, registry, providers);
+		}),
+
+		vscode.commands.registerCommand('modelpilot.compressActiveFile', async () => {
+			const editor = vscode.window.activeTextEditor;
+			if (!editor) {
+				vscode.window.showErrorMessage('No active text editor found.');
+				return;
+			}
+			const document = editor.document;
+			const text = document.getText();
+			const lang = document.languageId;
+			const compressed = compressCode(text, lang);
+
+			const origTokens = Math.ceil(text.length / 4);
+			const compTokens = Math.ceil(compressed.length / 4);
+			const savings = origTokens > 0 ? Math.round(((origTokens - compTokens) / origTokens) * 100) : 0;
+
+			await vscode.env.clipboard.writeText(compressed);
+			vscode.window.showInformationMessage(
+				`Active file compressed! Saved ${savings}% tokens (from ${origTokens} to ${compTokens} tokens). Copied to clipboard.`
+			);
 		}),
 
 		vscode.commands.registerCommand('modelpilot.addApiKey', async () => {
