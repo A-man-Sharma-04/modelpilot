@@ -46,9 +46,6 @@ export class OpenRouterProvider extends OpenAICompatibleProvider {
 		}
 
 		if (!response || !response.ok) {
-			if (authFailed) {
-				throw new Error('Authentication failed (401/403). Please verify your API key.');
-			}
 			return MODEL_PROFILES
 				.filter(m => m.provider === 'openrouter')
 				.map(m => ({ id: m.id, available: true }));

@@ -50,11 +50,13 @@ export const AGENT_TOOLS_METADATA = [
 		type: 'function' as const,
 		function: {
 			name: 'read_file',
-			description: 'Read the contents of a file in the workspace.',
+			description: 'Read the contents of a file in the workspace. You can optionally specify a line range.',
 			parameters: {
 				type: 'object',
 				properties: {
 					path: { type: 'string', description: 'Relative path of the file to read.' },
+					line_start: { type: 'number', description: 'Optional 1-indexed line number to start reading from.' },
+					line_end: { type: 'number', description: 'Optional 1-indexed line number to stop reading at (inclusive).' },
 				},
 				required: ['path'],
 			},
@@ -174,7 +176,9 @@ export class AgentExecutor {
 				if (typeof args.path !== 'string' || !args.path) {
 					throw new Error(`Missing or invalid required argument: 'path' must be a non-empty string.`);
 				}
-				return { result: await this.readFile(args.path, agentCwd) };
+				const lineStart = args.line_start !== undefined ? Number(args.line_start) : undefined;
+				const lineEnd = args.line_end !== undefined ? Number(args.line_end) : undefined;
+				return { result: await this.readFile(args.path, agentCwd, lineStart, lineEnd) };
 			case 'write_file':
 				if (typeof args.path !== 'string' || !args.path) {
 					throw new Error(`Missing or invalid required argument: 'path' must be a non-empty string.`);
@@ -218,20 +222,46 @@ export class AgentExecutor {
 		}
 	}
 
-	private static async readFile(relPath: string, agentCwd: string): Promise<string> {
+	private static async readFile(
+		relPath: string,
+		agentCwd: string,
+		lineStart?: number,
+		lineEnd?: number
+	): Promise<string> {
 		const p = getWorkspacePath(relPath, agentCwd);
 		const content = await fs.promises.readFile(p, 'utf8');
+
+		if (lineStart !== undefined || lineEnd !== undefined) {
+			const lines = content.split(/\r?\n/);
+			const totalLines = lines.length;
+			const start = lineStart !== undefined ? Math.max(1, lineStart) : 1;
+			const end = lineEnd !== undefined ? Math.min(totalLines, lineEnd) : totalLines;
+
+			if (start > totalLines) {
+				return `[Showing lines ${start} to ${end} of ${totalLines} (File has only ${totalLines} lines)]\n(Empty - outside file bounds)`;
+			}
+			if (start > end) {
+				return `[Error: Start line (${start}) is greater than end line (${end})]`;
+			}
+
+			const slice = lines.slice(start - 1, end);
+			const formattedSlice = slice.map((line, idx) => `${start + idx}: ${line}`).join('\n');
+			return `[Showing lines ${start} to ${end} of ${totalLines} total lines in "${relPath}"]\n${formattedSlice}`;
+		}
+
 		const maxChars = 6000;
 		if (content.length > maxChars) {
 			const head = content.slice(0, 3000);
 			const tail = content.slice(-3000);
-			return `${head}\n\n[NOTE: File content truncated for length. Showing first 3000 and last 3000 characters out of ${content.length} total.]\n\n${tail}`;
+			return `${head}\n\n[NOTE: File content truncated for length. Showing first 3000 and last 3000 characters out of ${content.length} total. You can use 'line_start' and 'line_end' arguments to read specific line ranges.]\n\n${tail}`;
 		}
 		return content;
 	}
 
 	private static async writeFile(relPath: string, content: string, agentCwd: string): Promise<string> {
 		const p = getWorkspacePath(relPath, agentCwd);
+		const dir = path.dirname(p);
+		await fs.promises.mkdir(dir, { recursive: true });
 		await fs.promises.writeFile(p, content, 'utf8');
 		try {
 			const doc = await vscode.workspace.openTextDocument(p);

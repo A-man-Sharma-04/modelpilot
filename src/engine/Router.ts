@@ -4,6 +4,22 @@ import { healthMonitor } from './HealthMonitor';
 import { estimateMessagesTokens, fitMessagesToContext } from './TaskDecomposer';
 import { parseRetryAfter } from '../providers/OpenAICompatibleProvider';
 
+export function isProviderLevelError(errReason: string): boolean {
+	const lower = errReason.toLowerCase();
+	return (
+		lower.includes('429') ||
+		lower.includes('rate limit') ||
+		lower.includes('401') ||
+		lower.includes('403') ||
+		lower.includes('unauthorized') ||
+		lower.includes('forbidden') ||
+		lower.includes('timeout') ||
+		lower.includes('fetch failed') ||
+		lower.includes('network') ||
+		lower.includes('econnrefused')
+	);
+}
+
 export class Router {
 	constructor(private readonly providers: IProvider[]) { }
 
@@ -118,15 +134,15 @@ export class Router {
 						onFallback(rec.model.displayName || rec.model.id, next.model.displayName || next.model.id, reason);
 					}
 
-					// Rate limit hit on NIM -> immediately fall back to Groq / not another NIM model
-					if (rec.model.provider === 'nvidia') {
+					// Skip subsequent models of the same provider on provider-level failure
+					if (isProviderLevelError(reason)) {
 						let nextIndex = i + 1;
-						while (nextIndex < recs.length && recs[nextIndex].model.provider === 'nvidia') {
+						while (nextIndex < recs.length && recs[nextIndex].model.provider === rec.model.provider) {
 							nextIndex++;
 						}
 						if (nextIndex > i + 1) {
 							const skippedCount = nextIndex - (i + 1);
-							errors.push(`Skipped ${skippedCount} subsequent NVIDIA NIM models on provider failure.`);
+							errors.push(`Skipped ${skippedCount} subsequent ${rec.model.provider} models on provider-level failure.`);
 							i = nextIndex - 1;
 						}
 					}

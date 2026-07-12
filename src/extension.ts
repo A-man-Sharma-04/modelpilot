@@ -1773,6 +1773,15 @@ ${classificationContext}`;
 						}
 					} catch (err) {
 						result = err instanceof Error ? err.message : String(err);
+						if (result.includes('ENOENT')) {
+							if (toolName === 'read_file') {
+								result += `\n\n[TIP] The file does not exist. Use the 'list_directory' or 'search_workspace' tools to locate the correct file path.`;
+							} else if (toolName === 'delete_file') {
+								result += `\n\n[TIP] The file does not exist, so it does not need to be deleted. You can proceed with other tasks.`;
+							}
+						} else if (result.includes('Access Denied')) {
+							result += `\n\n[TIP] You are restricted to the workspace boundary. Ensure all path arguments are relative and resolve to files inside the active workspace.`;
+						}
 					}
 				} else {
 					result = 'Tool execution rejected by user.';

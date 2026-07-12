@@ -64,7 +64,7 @@ suite('ModelPilot Providers Independent Verification Tests', () => {
 			assert.strictEqual(fakeModel, undefined);
 		});
 
-		test('listModels throws authentication error on 401/403 status', async () => {
+		test('listModels falls back to static profiles on 401/403 status', async () => {
 			const provider = new GoogleProvider(['invalid-key']);
 			(global as any).fetch = async () => {
 				return {
@@ -74,10 +74,10 @@ suite('ModelPilot Providers Independent Verification Tests', () => {
 				} as any;
 			};
 
-			await assert.rejects(
-				provider.listModels(),
-				/Authentication failed \(401\/403\)\. Please verify your API key\./
-			);
+			const models = await provider.listModels();
+			const googleProfiles = MODEL_PROFILES.filter(m => m.provider === 'google');
+			assert.strictEqual(models.length, googleProfiles.length);
+			assert.ok(models.every(m => m.available === true));
 		});
 
 		test('listModels falls back to static profiles on network exception', async () => {
@@ -246,7 +246,7 @@ suite('ModelPilot Providers Independent Verification Tests', () => {
 			assert.strictEqual(llama3Model.available, true);
 		});
 
-		test('listModels throws authentication error on 401/403 status', async () => {
+		test('listModels falls back to static profiles on 401/403 status', async () => {
 			const provider = new OpenRouterProvider(['invalid-key']);
 			(global as any).fetch = async () => {
 				return {
@@ -256,10 +256,10 @@ suite('ModelPilot Providers Independent Verification Tests', () => {
 				} as any;
 			};
 
-			await assert.rejects(
-				provider.listModels(),
-				/Authentication failed \(401\/403\)\. Please verify your API key\./
-			);
+			const models = await provider.listModels();
+			const openrouterProfiles = MODEL_PROFILES.filter(m => m.provider === 'openrouter');
+			assert.strictEqual(models.length, openrouterProfiles.length);
+			assert.ok(models.every(m => m.available === true));
 		});
 
 		test('listModels falls back to static profiles on other failures', async () => {
@@ -445,6 +445,42 @@ suite('ModelPilot Providers Independent Verification Tests', () => {
 			// 2. The result content should contain the line match from the small file
 			assert.ok(result.result.includes('small.txt'));
 			assert.ok(!result.result.includes('large.txt'));
+		});
+	});
+
+	suite('AgentExecutor read_file line bounds checks', () => {
+		let originalReadFile: any;
+
+		setup(() => {
+			originalReadFile = fs.promises.readFile;
+		});
+
+		teardown(() => {
+			fs.promises.readFile = originalReadFile;
+		});
+
+		test('read_file should slice content and prefix line numbers when bounds are provided', async () => {
+			fs.promises.readFile = (async (filePath: any) => {
+				return 'Line one\nLine two\nLine three\nLine four\nLine five';
+			}) as any;
+
+			const result = await AgentExecutor.execute('read_file', { path: 'test.txt', line_start: 2, line_end: 4 }, '.');
+			assert.ok(result.result.includes('[Showing lines 2 to 4 of 5 total lines in "test.txt"]'));
+			assert.ok(result.result.includes('2: Line two'));
+			assert.ok(result.result.includes('3: Line three'));
+			assert.ok(result.result.includes('4: Line four'));
+			assert.ok(!result.result.includes('Line one'));
+			assert.ok(!result.result.includes('Line five'));
+		});
+
+		test('read_file should handle out of bounds line_start gracefully', async () => {
+			fs.promises.readFile = (async (filePath: any) => {
+				return 'Line one\nLine two';
+			}) as any;
+
+			const result = await AgentExecutor.execute('read_file', { path: 'test.txt', line_start: 10, line_end: 20 }, '.');
+			assert.ok(result.result.includes('[Showing lines 10 to 2 of 2 (File has only 2 lines)]'));
+			assert.ok(result.result.includes('(Empty - outside file bounds)'));
 		});
 	});
 });

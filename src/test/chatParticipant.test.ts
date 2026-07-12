@@ -3601,6 +3601,78 @@ suite('ModelPilot Chat Participant Integration Tests', () => {
 		assert.strictEqual(result.content, 'Google Gemini Succeeded!');
 	});
 
+	test('Router should skip subsequent models of the same provider when a provider-level error is encountered', async () => {
+		Router.prototype.route = originalRoute;
+
+		let providerAChatCalls = 0;
+		let providerBChatCalls = 0;
+
+		const mockProviderA: any = {
+			name: 'providerA',
+			isConfigured: () => true,
+			getCooldownRemainingMs: () => 0,
+			chat: async (modelId: string, messages: any, tools: any, context: any, options: any) => {
+				providerAChatCalls++;
+				const err = new Error('Rate limit exceeded (429): too many requests');
+				(err as any).status = 429;
+				throw err;
+			}
+		};
+
+		const mockProviderB: any = {
+			name: 'providerB',
+			isConfigured: () => true,
+			getCooldownRemainingMs: () => 0,
+			chat: async (modelId: string, messages: any, tools: any, context: any, options: any) => {
+				providerBChatCalls++;
+				return { content: 'Provider B Succeeded!' };
+			}
+		};
+
+		const router = new Router([mockProviderA, mockProviderB]);
+
+		const recommendations: any[] = [
+			{
+				model: {
+					id: 'providerA/model-1',
+					provider: 'providerA',
+					contextLength: 8000,
+					capabilities: { coding: 7, reasoning: 7 }
+				},
+				rank: 1,
+				reason: 'A1'
+			},
+			{
+				model: {
+					id: 'providerA/model-2',
+					provider: 'providerA',
+					contextLength: 8000,
+					capabilities: { coding: 7, reasoning: 7 }
+				},
+				rank: 2,
+				reason: 'A2'
+			},
+			{
+				model: {
+					id: 'providerB/model-1',
+					provider: 'providerB',
+					contextLength: 8000,
+					capabilities: { coding: 7, reasoning: 7 }
+				},
+				rank: 3,
+				reason: 'B1'
+			}
+		];
+
+		const messages: any[] = [{ role: 'user', content: 'hello' }];
+
+		const result = await router.route(recommendations, messages);
+
+		assert.strictEqual(providerAChatCalls, 1, 'Should attempt providerA model-1 and fail, but skip model-2');
+		assert.strictEqual(providerBChatCalls, 1, 'Should fall back to providerB model-1');
+		assert.strictEqual(result.content, 'Provider B Succeeded!');
+	});
+
 	test('should automatically suggest commit message and summary when a modified file is saved', async () => {
 		const cp = require('child_process');
 		const originalExec = cp.exec;
