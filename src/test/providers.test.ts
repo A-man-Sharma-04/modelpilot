@@ -6,6 +6,7 @@ import { GroqProvider } from '../providers/GroqProvider';
 import { NvidiaProvider } from '../providers/NvidiaProvider';
 import { OpenRouterProvider } from '../providers/OpenRouterProvider';
 import { CerebrasProvider } from '../providers/CerebrasProvider';
+import { OllamaProvider } from '../providers/OllamaProvider';
 import { MODEL_PROFILES } from '../data/modelProfiles';
 import { Router } from '../engine/Router';
 import { AgentExecutor } from '../engine/AgentExecutor';
@@ -334,6 +335,46 @@ suite('ModelPilot Providers Independent Verification Tests', () => {
 			const result = await provider.chat('llama3.1-8b', [{ role: 'user', content: 'test' }]);
 			assert.ok(chatInternalCalled);
 			assert.strictEqual(result.content, 'Cerebras custom reply');
+		});
+	});
+
+	suite('OllamaProvider', () => {
+		test('isConfigured should return true always', () => {
+			const provider = new OllamaProvider();
+			assert.strictEqual(provider.isConfigured(), true);
+		});
+
+		test('listModels maps live models correctly on success', async () => {
+			const provider = new OllamaProvider();
+			(global as any).fetch = async (url: string) => {
+				assert.ok(url.includes('11434'));
+				return {
+					ok: true,
+					json: async () => ({
+						data: [
+							{ id: 'llama3:latest' },
+							{ id: 'mistral:latest' }
+						]
+					})
+				} as any;
+			};
+
+			const models = await provider.listModels();
+			assert.strictEqual(models.length, 2);
+			assert.strictEqual(models[0].id, 'llama3:latest');
+			assert.strictEqual(models[0].available, true);
+			assert.strictEqual(models[1].id, 'mistral:latest');
+			assert.strictEqual(models[1].available, true);
+		});
+
+		test('listModels returns empty array on fetch failure', async () => {
+			const provider = new OllamaProvider();
+			(global as any).fetch = async () => {
+				throw new Error('Connection refused');
+			};
+
+			const models = await provider.listModels();
+			assert.deepStrictEqual(models, []);
 		});
 	});
 

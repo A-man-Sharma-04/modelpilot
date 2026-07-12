@@ -10,6 +10,7 @@ import { OpenRouterProvider } from './providers/OpenRouterProvider';
 import { GroqProvider } from './providers/GroqProvider';
 import { CerebrasProvider } from './providers/CerebrasProvider';
 import { GoogleProvider } from './providers/GoogleProvider';
+import { OllamaProvider } from './providers/OllamaProvider';
 import { ModelRegistry } from './registry/ModelRegistry';
 import { Recommender } from './engine/Recommender';
 import { Router } from './engine/Router';
@@ -456,6 +457,7 @@ export async function handleChatRequest(
 				new GroqProvider(keys.groq),
 				new CerebrasProvider(keys.cerebras),
 				new GoogleProvider(keys.google),
+				new OllamaProvider(),
 			];
 			const router = new Router(providers);
 			const recommender = new Recommender(registry);
@@ -566,6 +568,7 @@ RULES:
 				new GroqProvider(keys.groq),
 				new CerebrasProvider(keys.cerebras),
 				new GoogleProvider(keys.google),
+				new OllamaProvider(),
 			];
 			const router = new Router(providers);
 			const recommender = new Recommender(registry);
@@ -1032,6 +1035,7 @@ export async function executeSingleTask(
 					new GroqProvider(keys.groq),
 					new CerebrasProvider(keys.cerebras),
 					new GoogleProvider(keys.google),
+					new OllamaProvider(),
 				];
 				const router = new Router(providers);
 
@@ -1296,6 +1300,7 @@ ${classificationContext}`;
 		new GroqProvider(keys.groq),
 		new CerebrasProvider(keys.cerebras),
 		new GoogleProvider(keys.google),
+		new OllamaProvider(),
 	];
 	const router = new Router(providers);
 
@@ -1943,6 +1948,7 @@ export function activate(context: vscode.ExtensionContext) {
 					new GroqProvider(keys.groq),
 					new CerebrasProvider(keys.cerebras),
 					new GoogleProvider(keys.google),
+					new OllamaProvider(),
 				];
 				await registry.refresh(providers);
 				return registry.getAvailable().length;
@@ -2543,6 +2549,7 @@ export function activate(context: vscode.ExtensionContext) {
 					new GroqProvider(keys.groq),
 					new CerebrasProvider(keys.cerebras),
 					new GoogleProvider(keys.google),
+					new OllamaProvider(),
 				];
 				const router = new Router(providers);
 				const recommender = new Recommender(registry);
@@ -2764,6 +2771,7 @@ export async function handleInlineChat(
 				new GroqProvider(keys.groq),
 				new CerebrasProvider(keys.cerebras),
 				new GoogleProvider(keys.google),
+				new OllamaProvider(),
 			];
 			const router = new Router(providers);
 
