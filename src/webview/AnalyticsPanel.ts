@@ -226,6 +226,91 @@ export class AnalyticsPanel {
 			--danger: #ef4444;
 		}
 
+		/* Chart styles */
+		.chart-section {
+			background: var(--bg-card);
+			border: 1px solid var(--border-color);
+			border-radius: 16px;
+			padding: 24px;
+			box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
+		}
+
+		.chart-card {
+			display: flex;
+			flex-direction: column;
+			gap: 16px;
+		}
+
+		.chart-header {
+			display: flex;
+			justify-content: space-between;
+			align-items: center;
+			flex-wrap: wrap;
+			gap: 12px;
+		}
+
+		.chart-title {
+			font-size: 1.25rem;
+			font-weight: 600;
+			margin: 0;
+		}
+
+		.chart-toggle-row {
+			display: flex;
+			gap: 8px;
+			background: rgba(255, 255, 255, 0.03);
+			border: 1px solid var(--border-color);
+			padding: 4px;
+			border-radius: 8px;
+		}
+
+		.btn-toggle {
+			background: transparent;
+			border: none;
+			color: var(--text-secondary);
+			font-size: 0.8rem;
+			padding: 6px 12px;
+			border-radius: 6px;
+			cursor: pointer;
+			font-weight: 500;
+			transition: all 0.2s;
+		}
+
+		.btn-toggle:hover {
+			color: var(--text-primary);
+		}
+
+		.btn-toggle.active {
+			background: linear-gradient(135deg, var(--accent-primary), var(--accent-secondary));
+			color: white;
+			box-shadow: 0 2px 8px rgba(6, 182, 212, 0.2);
+		}
+
+		.chart-container {
+			position: relative;
+			width: 100%;
+			height: 240px;
+		}
+
+		#history-chart {
+			width: 100%;
+			height: 100%;
+		}
+
+		.chart-tooltip {
+			position: absolute;
+			background: rgba(15, 23, 42, 0.95);
+			border: 1px solid var(--accent-primary);
+			border-radius: 6px;
+			padding: 8px 12px;
+			font-size: 0.8rem;
+			pointer-events: none;
+			display: none;
+			z-index: 10;
+			box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+			backdrop-filter: blur(4px);
+		}
+
 		body {
 			background-color: var(--bg-primary);
 			color: var(--text-primary);
@@ -667,6 +752,25 @@ export class AnalyticsPanel {
 			</div>
 		</div>
 
+		<!-- Savings & Token Usage Charts Section -->
+		<div class="chart-section" id="chart-section" style="display: none;">
+			<div class="chart-card">
+				<div class="chart-header">
+					<h3 class="chart-title">Savings & Token Usage History</h3>
+					<div class="chart-toggle-row">
+						<button class="btn-toggle active" id="btn-toggle-7" onclick="toggleChartRange(7)">Last 7 Days</button>
+						<button class="btn-toggle" id="btn-toggle-30" onclick="toggleChartRange(30)">Last 30 Days</button>
+					</div>
+				</div>
+				<div class="chart-container">
+					<svg id="history-chart" width="100%" height="240" viewBox="0 0 800 240" preserveAspectRatio="none">
+						<!-- Dynamically populated line chart path & labels -->
+					</svg>
+					<div class="chart-tooltip" id="chart-tooltip"></div>
+				</div>
+			</div>
+		</div>
+
 		<div class="provider-grid">
 			<!-- NVIDIA NIM Card -->
 			<div class="provider-card" id="nvidia-card">
@@ -951,6 +1055,156 @@ export class AnalyticsPanel {
 			google: []
 		};
 
+		let chartRange = 7;
+		let dailyStatsCached = [];
+
+		function toggleChartRange(days) {
+			chartRange = days;
+			document.getElementById('btn-toggle-7').className = days === 7 ? 'btn-toggle active' : 'btn-toggle';
+			document.getElementById('btn-toggle-30').className = days === 30 ? 'btn-toggle active' : 'btn-toggle';
+			renderHistoryChart();
+		}
+
+		function renderHistoryChart() {
+			const chartSection = document.getElementById('chart-section');
+			const svg = document.getElementById('history-chart');
+			
+			if (!dailyStatsCached || dailyStatsCached.length === 0) {
+				chartSection.style.display = 'none';
+				return;
+			}
+
+			chartSection.style.display = 'block';
+
+			// Filter to last N days
+			const lastNDays = dailyStatsCached.slice(-chartRange);
+			
+			const width = 800;
+			const height = 240;
+			const paddingLeft = 60;
+			const paddingRight = 40;
+			const paddingTop = 20;
+			const paddingBottom = 40;
+
+			const chartWidth = width - paddingLeft - paddingRight;
+			const chartHeight = height - paddingTop - paddingBottom;
+
+			let points = [...lastNDays];
+			if (points.length === 1) {
+				points = [{ date: 'Prev', requests: points[0].requests, tokens: points[0].tokens, savings: points[0].savings }, points[0]];
+			}
+
+			const maxSavings = Math.max(...points.map(p => p.savings), 0.01);
+			const maxTokens = Math.max(...points.map(p => p.tokens), 1);
+
+			let html = '<defs>' +
+				'<linearGradient id="savings-gradient" x1="0" y1="0" x2="0" y2="1">' +
+					'<stop offset="0%" stop-color="var(--accent-primary)" stop-opacity="0.3"/>' +
+					'<stop offset="100%" stop-color="var(--accent-primary)" stop-opacity="0.0"/>' +
+				'</linearGradient>' +
+			'</defs>';
+
+			const n = points.length;
+			const xStep = chartWidth / (n - 1);
+
+			const coordinates = points.map((p, idx) => {
+				const x = paddingLeft + idx * xStep;
+				const ySavings = paddingTop + chartHeight - (p.savings / maxSavings) * chartHeight;
+				const yTokens = paddingTop + chartHeight - (p.tokens / maxTokens) * chartHeight;
+				return { x: x, ySavings: ySavings, yTokens: yTokens, raw: p };
+			});
+
+			for (let i = 0; i <= 4; i++) {
+				const yRatio = i / 4;
+				const y = paddingTop + chartHeight - yRatio * chartHeight;
+				const valSavings = yRatio * maxSavings;
+				
+				html += '<line x1="' + paddingLeft + '" y1="' + y + '" x2="' + (width - paddingRight) + '" y2="' + y + '" stroke="rgba(255,255,255,0.05)" stroke-width="1" />' +
+					'<text x="' + (paddingLeft - 10) + '" y="' + (y + 4) + '" fill="var(--text-secondary)" font-size="10" text-anchor="end">$' + valSavings.toFixed(2) + '</text>';
+			}
+
+			let savingsAreaPath = 'M ' + coordinates[0].x + ' ' + (paddingTop + chartHeight) + ' ';
+			coordinates.forEach(c => {
+				savingsAreaPath += 'L ' + c.x + ' ' + c.ySavings + ' ';
+			});
+			savingsAreaPath += 'L ' + coordinates[n-1].x + ' ' + (paddingTop + chartHeight) + ' Z';
+
+			html += '<path d="' + savingsAreaPath + '" fill="url(#savings-gradient)" />';
+
+			let savingsLinePath = 'M ' + coordinates[0].x + ' ' + coordinates[0].ySavings + ' ';
+			for (let i = 1; i < n; i++) {
+				savingsLinePath += 'L ' + coordinates[i].x + ' ' + coordinates[i].ySavings + ' ';
+			}
+			html += '<path d="' + savingsLinePath + '" fill="none" stroke="var(--accent-primary)" stroke-width="3" stroke-linecap="round" />';
+
+			let tokensLinePath = 'M ' + coordinates[0].x + ' ' + coordinates[0].yTokens + ' ';
+			for (let i = 1; i < n; i++) {
+				tokensLinePath += 'L ' + coordinates[i].x + ' ' + coordinates[i].yTokens + ' ';
+			}
+			html += '<path d="' + tokensLinePath + '" fill="none" stroke="var(--success)" stroke-dasharray="4,4" stroke-width="1.5" stroke-linecap="round" opacity="0.6" />';
+
+			coordinates.forEach((c, idx) => {
+				const showLabel = n <= 7 || idx % Math.ceil(n / 7) === 0 || idx === n - 1;
+				if (showLabel) {
+					const dateParts = c.raw.date.split('-');
+					const label = dateParts.length >= 3 ? dateParts[1] + '/' + dateParts[2] : c.raw.date;
+					html += '<text x="' + c.x + '" y="' + (height - paddingBottom + 18) + '" fill="var(--text-secondary)" font-size="10" text-anchor="middle">' + label + '</text>' +
+						'<line x1="' + c.x + '" y1="' + (height - paddingBottom) + '" x2="' + c.x + '" y2="' + (height - paddingBottom + 4) + '" stroke="rgba(255,255,255,0.15)" stroke-width="1" />';
+				}
+			});
+
+			coordinates.forEach((c) => {
+				html += '<circle cx="' + c.x + '" cy="' + c.ySavings + '" r="6" fill="var(--bg-primary)" stroke="var(--accent-primary)" stroke-width="2" style="cursor: pointer;" ' +
+					'onmouseover="showChartTooltip(event, \'' + c.raw.date + '\', \'' + c.raw.savings + '\', \'' + c.raw.tokens + '\', \'' + c.raw.requests + '\')" ' +
+					'onmouseout="hideChartTooltip()" />';
+			});
+
+			svg.innerHTML = html;
+		}
+
+		function showChartTooltip(event, date, savings, tokens, requests) {
+			const tooltip = document.getElementById('chart-tooltip');
+			const rect = event.target.getBoundingClientRect();
+			const containerRect = document.getElementById('chart-section').getBoundingClientRect();
+
+			let formattedDate = date;
+			try {
+				if (date !== 'Prev') {
+					const d = new Date(date + 'T00:00:00');
+					formattedDate = d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+				}
+			} catch {}
+
+			tooltip.innerHTML = '<div style="font-weight: 600; margin-bottom: 4px; color: var(--text-primary);">' + formattedDate + '</div>' +
+				'<div style="display: flex; justify-content: space-between; gap: 16px; margin: 2px 0;">' +
+					'<span style="color: var(--text-secondary);">Savings:</span>' +
+					'<span style="color: var(--success); font-weight: 600;">$' + parseFloat(savings).toFixed(4) + '</span>' +
+				'</div>' +
+				'<div style="display: flex; justify-content: space-between; gap: 16px; margin: 2px 0;">' +
+					'<span style="color: var(--text-secondary);">Tokens:</span>' +
+					'<span style="color: var(--accent-primary); font-weight: 500;">' + parseInt(tokens).toLocaleString() + '</span>' +
+				'</div>' +
+				'<div style="display: flex; justify-content: space-between; gap: 16px; margin: 2px 0;">' +
+					'<span style="color: var(--text-secondary);">Requests:</span>' +
+					'<span style="color: var(--text-primary); font-weight: 500;">' + requests + '</span>' +
+				'</div>';
+
+			tooltip.style.display = 'block';
+			
+			const tooltipWidth = tooltip.offsetWidth;
+			const tooltipHeight = tooltip.offsetHeight;
+			
+			const x = rect.left - containerRect.left - tooltipWidth / 2 + rect.width / 2;
+			const y = rect.top - containerRect.top - tooltipHeight - 10;
+
+			tooltip.style.left = x + 'px';
+			tooltip.style.top = y + 'px';
+		}
+
+		function hideChartTooltip() {
+			document.getElementById('chart-tooltip').style.display = 'none';
+		}
+
 		function resetData() {
 			vscode.postMessage({ command: 'reset' });
 		}
@@ -969,6 +1223,9 @@ export class AnalyticsPanel {
 			if (message.command === 'update') {
 				const { data, savings, providerStatus } = message;
 				
+				dailyStatsCached = data.dailyStats || [];
+				renderHistoryChart();
+
 				// Update main stats
 				document.getElementById('savings-display').innerText = savings;
 				

@@ -32,6 +32,13 @@ export interface FineTuningRecord {
 	latencyMs: number;
 }
 
+export interface DailyStats {
+	date: string; // YYYY-MM-DD
+	requests: number;
+	tokens: number;
+	savings: number;
+}
+
 export interface AnalyticsData {
 	providers: {
 		nvidia: ProviderStats;
@@ -45,6 +52,7 @@ export interface AnalyticsData {
 		[modelId: string]: ModelStats;
 	};
 	fineTuningData?: FineTuningRecord[];
+	dailyStats?: DailyStats[];
 }
 
 const GLOBAL_STATE_KEY = 'modelpilot.analytics';
@@ -76,6 +84,7 @@ export class AnalyticsManager {
 			},
 			models: {},
 			fineTuningData: [],
+			dailyStats: [],
 		};
 
 		if (saved) {
@@ -101,6 +110,7 @@ export class AnalyticsManager {
 				providers,
 				models: saved.models || {},
 				fineTuningData: saved.fineTuningData || [],
+				dailyStats: saved.dailyStats || [],
 			};
 		}
 
@@ -183,6 +193,25 @@ export class AnalyticsManager {
 		mStats.actualCost += actualCost;
 		mStats.totalLatencyMs = (mStats.totalLatencyMs || 0) + latencyMs;
 
+		// Record daily stats
+		if (!data.dailyStats) {
+			data.dailyStats = [];
+		}
+		const dateStr = new Date().toISOString().split('T')[0];
+		let dayStat = data.dailyStats.find(d => d.date === dateStr);
+		if (!dayStat) {
+			dayStat = { date: dateStr, requests: 0, tokens: 0, savings: 0 };
+			data.dailyStats.push(dayStat);
+		}
+		dayStat.requests += 1;
+		dayStat.tokens += promptTokens + completionTokens;
+		dayStat.savings += (commercialCost - actualCost);
+
+		// Keep only the last 90 days of daily stats to prevent storage bloat
+		if (data.dailyStats.length > 90) {
+			data.dailyStats = data.dailyStats.slice(-90);
+		}
+
 		// Record fine-tuning prompt-response pair
 		if (chatMessages && chatMessages.length > 0 && responseContent) {
 			if (!data.fineTuningData) {
@@ -226,6 +255,7 @@ export class AnalyticsManager {
 			},
 			models: {},
 			fineTuningData: [],
+			dailyStats: [],
 		};
 		await this.globalState.update(GLOBAL_STATE_KEY, freshData);
 		this.onDidChangeEmitter.fire(freshData);

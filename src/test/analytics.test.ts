@@ -44,6 +44,8 @@ suite('ModelPilot Analytics & Savings Panel Tests', () => {
 		assert.strictEqual(data.providers.google.requests, 0);
 		assert.ok(Array.isArray(data.fineTuningData));
 		assert.strictEqual(data.fineTuningData!.length, 0);
+		assert.ok(Array.isArray(data.dailyStats));
+		assert.strictEqual(data.dailyStats!.length, 0);
 		assert.strictEqual(manager.calculateSavings(data), 0.0);
 		assert.strictEqual(manager.getSavingsString(data), '$0.00');
 	});
@@ -116,6 +118,13 @@ suite('ModelPilot Analytics & Savings Panel Tests', () => {
 		assert.strictEqual(data.fineTuningData![0].modelId, 'gemini-2.5-pro');
 		assert.strictEqual(data.fineTuningData![0].response, 'test response');
 
+		assert.ok(data.dailyStats);
+		assert.strictEqual(data.dailyStats!.length, 1);
+		const todayStr = new Date().toISOString().split('T')[0];
+		assert.strictEqual(data.dailyStats![0].date, todayStr);
+		assert.strictEqual(data.dailyStats![0].requests, 5);
+		assert.ok(Math.abs(data.dailyStats![0].savings - 15.24) < 0.0001);
+
 		const savings = manager.calculateSavings(data);
 		assert.ok(Math.abs(savings - 15.24) < 0.0001, `Expected savings to be close to 15.24, got ${savings}`);
 		assert.strictEqual(manager.getSavingsString(data), '$15.24');
@@ -147,6 +156,7 @@ suite('ModelPilot Analytics & Savings Panel Tests', () => {
 		assert.strictEqual(data.providers.cerebras.requests, 0);
 		assert.strictEqual(data.providers.google.requests, 0);
 		assert.strictEqual(data.fineTuningData!.length, 0);
+		assert.strictEqual(data.dailyStats!.length, 0);
 		assert.strictEqual(Object.keys(data.models).length, 0);
 		assert.strictEqual(manager.calculateSavings(data), 0.0);
 	});
