@@ -99,6 +99,10 @@
         "title": "ModelPilot: View Token & Cost Analytics"
       },
       {
+        "command": "modelpilot.showArena",
+        "title": "ModelPilot: Open Model Comparison Arena"
+      },
+      {
         "command": "modelpilot.inlineChat",
         "title": "ModelPilot: Inline Chat (Edit/Generate Code)"
       },

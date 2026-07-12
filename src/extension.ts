@@ -36,6 +36,7 @@ import { decompose, inferCategory, estimateTokens, estimateMessagesTokens } from
 import { SYSTEM_PROMPT, MODE_PROMPTS, buildWorkspaceContext } from './participant/systemPrompt';
 import { AnalyticsManager } from './engine/AnalyticsManager';
 import { AnalyticsPanel } from './webview/AnalyticsPanel';
+import { ModelArenaPanel } from './webview/ModelArenaPanel';
 import { ModelPilotChatProvider } from './chatProvider';
 import { ChatResult } from './providers/IProvider';
 
@@ -2033,6 +2034,19 @@ export function activate(context: vscode.ExtensionContext) {
 
 		vscode.commands.registerCommand('modelpilot.showAnalytics', () => {
 			AnalyticsPanel.createOrShow(context.extensionUri, analyticsManager, sm);
+		}),
+
+		vscode.commands.registerCommand('modelpilot.showArena', async () => {
+			const keys = await sm.getAll();
+			const providers = [
+				new NvidiaProvider(keys.nvidia),
+				new OpenRouterProvider(keys.openrouter),
+				new GroqProvider(keys.groq),
+				new CerebrasProvider(keys.cerebras),
+				new GoogleProvider(keys.google),
+				new OllamaProvider(),
+			];
+			ModelArenaPanel.createOrShow(context.extensionUri, registry, providers);
 		}),
 
 		vscode.commands.registerCommand('modelpilot.addApiKey', async () => {
