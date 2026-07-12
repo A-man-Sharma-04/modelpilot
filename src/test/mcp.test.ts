@@ -62,17 +62,18 @@ class MockChildProcess extends EventEmitter {
 suite('ModelPilot MCP Integration Tests', () => {
 	let originalSpawn: any;
 	let mockProcess: MockChildProcess;
+	const childProcessModule = require('child_process');
 
 	setup(() => {
-		originalSpawn = McpServerConnection.spawn;
+		originalSpawn = childProcessModule.spawn;
 		mockProcess = new MockChildProcess();
-		McpServerConnection.spawn = (command: string, args: string[], options: any) => {
+		childProcessModule.spawn = (command: string, args: string[], options: any) => {
 			return mockProcess as any;
 		};
 	});
 
 	teardown(() => {
-		McpServerConnection.spawn = originalSpawn;
+		childProcessModule.spawn = originalSpawn;
 	});
 
 	test('McpServerConnection handshake and tool listing', async () => {
@@ -122,6 +123,92 @@ suite('ModelPilot MCP Integration Tests', () => {
 		} finally {
 			mcpManager.dispose();
 			vscode.workspace.getConfiguration = originalGet;
+		}
+	});
+
+	test('configureMcpServer command configuration flow', async () => {
+		const originalQuickPick = vscode.window.showQuickPick;
+		const originalInputBox = vscode.window.showInputBox;
+		const originalProgress = vscode.window.withProgress;
+		const originalInfoMessage = vscode.window.showInformationMessage;
+		const originalGetConfig = vscode.workspace.getConfiguration;
+
+		let updatedConfigValue: any = null;
+		let infoMessageText = '';
+
+		const mockMcpServers: Record<string, any> = {};
+
+		// Mock VS Code settings update
+		(vscode.workspace as any).getConfiguration = (section?: string) => {
+			return {
+				get: (key: string, defaultValue?: any) => {
+					if (key === 'mcpServers') { return mockMcpServers; }
+					return defaultValue;
+				},
+				update: async (key: string, value: any, target: any) => {
+					if (key === 'mcpServers') {
+						updatedConfigValue = value;
+					}
+				}
+			} as any;
+		};
+
+		// Mock inputs
+		let quickPickStep = 0;
+		(vscode.window as any).showQuickPick = async (items: any[], options?: any) => {
+			quickPickStep++;
+			if (quickPickStep === 1) {
+				// Select "Add/Edit MCP Server"
+				return items.find(i => i.value === 'add');
+			}
+			return null;
+		};
+
+		let inputBoxStep = 0;
+		(vscode.window as any).showInputBox = async (options?: any) => {
+			inputBoxStep++;
+			if (inputBoxStep === 1) {
+				// Server name
+				return 'weather-test';
+			} else if (inputBoxStep === 2) {
+				// Command
+				return 'node';
+			} else if (inputBoxStep === 3) {
+				// Args
+				return 'path/to/server.js';
+			} else if (inputBoxStep === 4) {
+				// Env
+				return 'API_KEY=testkey';
+			}
+			return '';
+		};
+
+		(vscode.window as any).showInformationMessage = async (message: string, ...items: any[]) => {
+			infoMessageText = message;
+			return undefined as any;
+		};
+
+		(vscode.window as any).withProgress = async (options: any, task: (progress: any, token: any) => Thenable<any>) => {
+			return task({ report: () => {} }, null);
+		};
+
+		try {
+			await vscode.commands.executeCommand('modelpilot.configureMcpServer');
+
+			// Asserts
+			assert.ok(updatedConfigValue);
+			assert.ok(updatedConfigValue['weather-test']);
+			assert.strictEqual(updatedConfigValue['weather-test'].command, 'node');
+			assert.deepStrictEqual(updatedConfigValue['weather-test'].args, ['path/to/server.js']);
+			assert.deepStrictEqual(updatedConfigValue['weather-test'].env, { API_KEY: 'testkey' });
+			assert.ok(infoMessageText.includes('weather-test'));
+			assert.ok(infoMessageText.includes('validated and saved successfully'));
+		} finally {
+			vscode.window.showQuickPick = originalQuickPick;
+			vscode.window.showInputBox = originalInputBox;
+			vscode.window.withProgress = originalProgress;
+			vscode.window.showInformationMessage = originalInfoMessage;
+			vscode.workspace.getConfiguration = originalGetConfig;
 		}
 	});
 });

@@ -105,6 +105,10 @@
       {
         "command": "modelpilot.runInTerminal",
         "title": "ModelPilot: Run in Terminal"
+      },
+      {
+        "command": "modelpilot.configureMcpServer",
+        "title": "ModelPilot: Configure MCP Server"
       }
     ],
     "keybindings": [

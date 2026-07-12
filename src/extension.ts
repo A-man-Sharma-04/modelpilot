@@ -17,7 +17,7 @@ import { SecretsManager, ProviderName } from './secrets';
 import { EXPERT_PROFILES, DEFAULT_EXPERT_ID, getExpertProfile } from './data/expertProfiles';
 import { Message } from './providers/IProvider';
 import { AgentExecutor, AGENT_TOOLS_METADATA, getWorkspacePath } from './engine/AgentExecutor';
-import { mcpManager } from './engine/McpManager';
+import { mcpManager, McpServerConnection } from './engine/McpManager';
 import {
 	TOOLS_INSTRUCTION,
 	MODEL_RELIABILITY_INSTRUCTIONS,
@@ -2207,6 +2207,170 @@ export function activate(context: vscode.ExtensionContext) {
 			}
 			terminal.show(false);
 			terminal.sendText(command);
+		}),
+
+		vscode.commands.registerCommand('modelpilot.configureMcpServer', async () => {
+			const mcpConfig = vscode.workspace.getConfiguration('modelpilot');
+			const mcpServers = { ...mcpConfig.get<Record<string, any>>('mcpServers', {}) };
+
+			const action = await vscode.window.showQuickPick(
+				[
+					{ label: 'Add/Edit MCP Server', value: 'add' },
+					{ label: 'Remove MCP Server', value: 'remove' },
+					{ label: 'List Configured MCP Servers', value: 'list' }
+				],
+				{
+					title: 'ModelPilot: Configure MCP Server',
+					placeHolder: 'Select an action'
+				}
+			);
+			if (!action) { return; }
+
+			if (action.value === 'list') {
+				const names = Object.keys(mcpServers);
+				if (names.length === 0) {
+					vscode.window.showInformationMessage('No MCP servers currently configured.');
+					return;
+				}
+				const items = names.map(name => {
+					const s = mcpServers[name];
+					const argsStr = s.args && s.args.length > 0 ? ' ' + s.args.join(' ') : '';
+					return {
+						label: name,
+						detail: `${s.command}${argsStr}`
+					};
+				});
+				await vscode.window.showQuickPick(items, {
+					title: 'ModelPilot: Configured MCP Servers',
+					placeHolder: 'Select a server to view details (press Esc to close)'
+				});
+				return;
+			}
+
+			if (action.value === 'remove') {
+				const names = Object.keys(mcpServers);
+				if (names.length === 0) {
+					vscode.window.showWarningMessage('No MCP servers to remove.');
+					return;
+				}
+				const picked = await vscode.window.showQuickPick(names, {
+					title: 'ModelPilot: Remove MCP Server',
+					placeHolder: 'Select a server to remove'
+				});
+				if (!picked) { return; }
+
+				delete mcpServers[picked];
+				await mcpConfig.update('mcpServers', mcpServers, vscode.ConfigurationTarget.Global);
+				vscode.window.showInformationMessage(`Successfully removed MCP server "${picked}".`);
+				return;
+			}
+
+			// Add/Edit flow
+			// 1. Get name
+			const name = await vscode.window.showInputBox({
+				title: 'ModelPilot: Configure MCP Server (1/4)',
+				prompt: 'Enter a unique identifier name for the MCP server',
+				placeHolder: 'e.g. weather, filesystem',
+				validateInput: (value) => {
+					if (!value || !value.trim()) { return 'Name is required'; }
+					if (!/^[a-zA-Z0-9_-]+$/.test(value)) { return 'Name must be alphanumeric with dashes or underscores only'; }
+					return null;
+				}
+			});
+			if (!name) { return; }
+
+			const existing = mcpServers[name] || {};
+
+			// 2. Get command
+			const command = await vscode.window.showInputBox({
+				title: 'ModelPilot: Configure MCP Server (2/4)',
+				prompt: 'Enter the command executable to spawn the server',
+				placeHolder: 'e.g. node, npx, python',
+				value: existing.command || '',
+				validateInput: (value) => {
+					if (!value || !value.trim()) { return 'Command is required'; }
+					return null;
+				}
+			});
+			if (!command) { return; }
+
+			// 3. Get args
+			const argsRaw = await vscode.window.showInputBox({
+				title: 'ModelPilot: Configure MCP Server (3/4)',
+				prompt: 'Enter space-separated arguments (optional)',
+				placeHolder: 'e.g. /path/to/server.js --option value',
+				value: existing.args ? existing.args.join(' ') : ''
+			});
+			if (argsRaw === undefined) { return; }
+
+			const args: string[] = [];
+			const matches = argsRaw.match(/(?:[^\s"]+|"[^"]*")+/g);
+			if (matches) {
+				for (let arg of matches) {
+					if (arg.startsWith('"') && arg.endsWith('"')) {
+						arg = arg.slice(1, -1);
+					}
+					args.push(arg);
+				}
+			}
+
+			// 4. Get env (optional)
+			let envValue = '';
+			if (existing.env) {
+				envValue = Object.entries(existing.env).map(([k, v]) => `${k}=${v}`).join(', ');
+			}
+			const envRaw = await vscode.window.showInputBox({
+				title: 'ModelPilot: Configure MCP Server (4/4)',
+				prompt: 'Enter comma-separated environment variables (optional, e.g. KEY1=VAL1, KEY2=VAL2)',
+				placeHolder: 'e.g. API_KEY=secret_value, BASE_URL=https://api.com',
+				value: envValue
+			});
+			if (envRaw === undefined) { return; }
+
+			const env: Record<string, string> = {};
+			if (envRaw && envRaw.trim()) {
+				const parts = envRaw.split(',');
+				for (const part of parts) {
+					const [k, v] = part.split('=').map(p => p.trim());
+					if (k && v) {
+						env[k] = v;
+					}
+				}
+			}
+
+			const configObj: any = { command, args };
+			if (Object.keys(env).length > 0) {
+				configObj.env = env;
+			}
+
+			// Validate server connection
+			await vscode.window.withProgress({
+				location: vscode.ProgressLocation.Notification,
+				title: `Validating MCP server "${name}" connection and handshake...`,
+				cancellable: false
+			}, async () => {
+				const connection = new McpServerConnection(name, configObj);
+				try {
+					const tools = await connection.initialize();
+					// Success! Save to config
+					mcpServers[name] = configObj;
+					await mcpConfig.update('mcpServers', mcpServers, vscode.ConfigurationTarget.Global);
+					vscode.window.showInformationMessage(`MCP server "${name}" validated and saved successfully! Loaded ${tools.length} tools.`);
+				} catch (err: any) {
+					const choice = await vscode.window.showErrorMessage(
+						`Failed to validate MCP connection: ${err.message || err}. Save config anyway?`,
+						'Save',
+						'Cancel'
+					);
+					if (choice === 'Save') {
+						mcpServers[name] = configObj;
+						await mcpConfig.update('mcpServers', mcpServers, vscode.ConfigurationTarget.Global);
+						vscode.window.showInformationMessage(`MCP server "${name}" saved anyway.`);
+					}
+				} finally {
+					connection.dispose();
+				}
+			});
 		}),
 	);
 
