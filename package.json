@@ -117,6 +117,10 @@
       {
         "command": "modelpilot.compressActiveFile",
         "title": "ModelPilot: Compress Context File & Copy to Clipboard"
+      },
+      {
+        "command": "modelpilot.showSearch",
+        "title": "ModelPilot: Open Code Search Panel & Indexer"
       }
     ],
     "keybindings": [

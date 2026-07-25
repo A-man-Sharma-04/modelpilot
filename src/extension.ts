@@ -38,6 +38,7 @@ import { SYSTEM_PROMPT, MODE_PROMPTS, buildWorkspaceContext } from './participan
 import { AnalyticsManager } from './engine/AnalyticsManager';
 import { AnalyticsPanel } from './webview/AnalyticsPanel';
 import { ModelArenaPanel } from './webview/ModelArenaPanel';
+import { SearchPanel } from './webview/SearchPanel';
 import { ModelPilotChatProvider } from './chatProvider';
 import { ChatResult } from './providers/IProvider';
 
@@ -2084,6 +2085,10 @@ export function activate(context: vscode.ExtensionContext) {
 			vscode.window.showInformationMessage(
 				`Active file compressed! Saved ${savings}% tokens (from ${origTokens} to ${compTokens} tokens). Copied to clipboard.`
 			);
+		}),
+
+		vscode.commands.registerCommand('modelpilot.showSearch', () => {
+			SearchPanel.createOrShow(context.extensionUri);
 		}),
 
 		vscode.commands.registerCommand('modelpilot.addApiKey', async () => {
