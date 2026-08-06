@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.1.0
+
+### Added
+- **Inline Code Completions**: Real-time ghost-text code suggestions as you type in code editors using low-latency model routing (Groq, Cerebras). Includes debouncing, cancellation, and language filtering (`modelpilot.inlineCompletions`).
+- **Code Search Panel & Indexer**: Workspace code search webview panel with file filters and regex search capabilities.
+- **Context Compression Engine**: Strips comments and whitespace from codebase context files to minimize token consumption (`modelpilot.compressContext`).
+
+### Security & Hardening
+- **Parameterized Execution**: Hardened Git and MCP command execution against shell injection vulnerabilities.
+- **Webview XSS Protection**: HTML escaping and attribute sanitization across Analytics, Arena, and Search webview panels.
+- **Scrubbed Debug Logging**: Route logs to VS Code's per-extension log directory with automatic secret scrubbing for API keys and Bearer tokens.
+
 ## 1.0.0
 
 ### Added
