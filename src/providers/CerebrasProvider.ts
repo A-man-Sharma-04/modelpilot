@@ -1,7 +1,7 @@
 import { LiveModel, Message, Tool, ChatOptions, ChatResult } from './IProvider';
 import { OpenAICompatibleProvider } from './OpenAICompatibleProvider';
 import { MODEL_PROFILES } from '../data/modelProfiles';
-import * as fs from 'fs';
+import { debugLog } from '../debug';
 
 const BASE_URL = 'https://api.cerebras.ai/v1';
 
@@ -20,12 +20,7 @@ export class CerebrasProvider extends OpenAICompatibleProvider {
 		context?: any,
 		options: ChatOptions = {},
 	): Promise<ChatResult> {
-		const debugLogPath = '/home/kali/modelpilot/cerebras_debug.log';
-		const log = (msg: string) => {
-			try {
-				fs.appendFileSync(debugLogPath, `[${new Date().toISOString()}] ${msg}\n`);
-			} catch {}
-		};
+		const log = (msg: string) => debugLog('cerebras', msg);
 		log(`chat() called for model: ${modelId}`);
 		try {
 			const res = await super.chat(modelId, messages, tools, context, options);
@@ -38,12 +33,7 @@ export class CerebrasProvider extends OpenAICompatibleProvider {
 	}
 
 	async listModels(): Promise<LiveModel[]> {
-		const debugLogPath = '/home/kali/modelpilot/cerebras_debug.log';
-		const log = (msg: string) => {
-			try {
-				fs.appendFileSync(debugLogPath, `[${new Date().toISOString()}] ${msg}\n`);
-			} catch {}
-		};
+		const log = (msg: string) => debugLog('cerebras', msg);
 		log('listModels() called');
 
 		if (!this.isConfigured()) {

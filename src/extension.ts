@@ -41,6 +41,7 @@ import { ModelArenaPanel } from './webview/ModelArenaPanel';
 import { SearchPanel } from './webview/SearchPanel';
 import { ModelPilotChatProvider } from './chatProvider';
 import { ChatResult } from './providers/IProvider';
+import { initDebugLogger, debugLog, safeSerialize } from './debug';
 
 async function recordUsage(
 	chatResult: ChatResult,
@@ -993,18 +994,13 @@ export async function executeSingleTask(
 	const recommender = new Recommender(registry);
 	let recs = recommender.recommend(expertId, 100, initialTokensEstimate);
 
-	const debugLogPath = '/home/kali/modelpilot/openai_compatible_debug.log';
-	try {
-		fs.appendFileSync(debugLogPath, `[${new Date().toISOString()}] [ROUTER] Expert: ${expertId}. Recommendations: ${JSON.stringify(recs.map(r => ({ model: `${r.model.provider}::${r.model.id}`, capabilities: r.model.capabilities })))}\n`);
-	} catch {}
+	debugLog('openai_compatible', `[ROUTER] Expert: ${expertId}. Recommendations: ${safeSerialize(recs.map(r => ({ model: `${r.model.provider}::${r.model.id}`, capabilities: r.model.capabilities })))}`);
 
 	if (recs.length === 0) {
 		response.progress('No models loaded. Discovered keys, attempting to refresh models...');
 		await refreshModels();
 		recs = recommender.recommend(expertId, 100, initialTokensEstimate);
-		try {
-			fs.appendFileSync(debugLogPath, `[${new Date().toISOString()}] [ROUTER] Post-refresh Recommendations: ${JSON.stringify(recs.map(r => ({ model: `${r.model.provider}::${r.model.id}`, capabilities: r.model.capabilities })))}\n`);
-		} catch {}
+		debugLog('openai_compatible', `[ROUTER] Post-refresh Recommendations: ${safeSerialize(recs.map(r => ({ model: `${r.model.provider}::${r.model.id}`, capabilities: r.model.capabilities })))}`);
 	}
 
 	if (recs.length === 0) {
@@ -1876,6 +1872,9 @@ class ModelPilotDiffProvider implements vscode.TextDocumentContentProvider {
 const diffProvider = new ModelPilotDiffProvider();
 
 export function activate(context: vscode.ExtensionContext) {
+	// Route debug logs to VS Code's per-extension log directory.
+	initDebugLogger(context.logUri.fsPath);
+
 	// Detect available system tools asynchronously in the background after activation
 	setTimeout(() => {
 		const commonTools = [

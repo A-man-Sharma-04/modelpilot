@@ -700,12 +700,14 @@ suite('ModelPilot Chat Participant Integration Tests', () => {
 		const mockNvidiaProvider: any = {
 			name: 'nvidia',
 			isConfigured: () => true,
+			getCooldownRemainingMs: () => 0,
 			chat: async () => ({ content: 'Nvidia response after Groq failed' }),
 			listModels: async () => []
 		};
 		const mockGroqProvider: any = {
 			name: 'groq',
 			isConfigured: () => true,
+			getCooldownRemainingMs: () => 0,
 			chat: async () => {
 				throw new Error('Groq rate limited');
 			},

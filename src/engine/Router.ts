@@ -3,6 +3,7 @@ import { Recommendation } from './Recommender';
 import { healthMonitor } from './HealthMonitor';
 import { estimateMessagesTokens, fitMessagesToContext } from './TaskDecomposer';
 import { parseRetryAfter } from '../providers/OpenAICompatibleProvider';
+import { debugLog, safeSerialize } from '../debug';
 
 export function isProviderLevelError(errReason: string): boolean {
 	const lower = errReason.toLowerCase();
@@ -90,11 +91,7 @@ export class Router {
 		});
 		candidateRecs = indexedRecs.map(item => item.rec);
 
-		const fs = require('fs');
-		const debugLogPath = '/home/kali/modelpilot/openai_compatible_debug.log';
-		try {
-			fs.appendFileSync(debugLogPath, `[${new Date().toISOString()}] [ROUTER] Sorted Candidates: ${JSON.stringify(candidateRecs.map(r => ({ model: `${r.model.provider}::${r.model.id}`, healthy: healthMonitor.isHealthy(r.model.provider), cooldown: getCooldown(r.model.provider) })))}\n`);
-		} catch {}
+		debugLog('openai_compatible', `[ROUTER] Sorted Candidates: ${safeSerialize(candidateRecs.map(r => ({ model: `${r.model.provider}::${r.model.id}`, healthy: healthMonitor.isHealthy(r.model.provider), cooldown: getCooldown(r.model.provider) })))}`);
 
 		const errors: string[] = [];
 

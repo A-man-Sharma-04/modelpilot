@@ -1,6 +1,6 @@
 import { IProvider, Message, LiveModel, ChatOptions, Tool, ToolCall, ChatResult } from './IProvider';
 import { getModelProfile } from '../data/modelProfiles';
-import * as fs from 'fs';
+import { debugLog, safeSerialize } from '../debug';
 
 function formatMessagesForNonNativeTools(messages: Message[]): Message[] {
 	return messages.map(m => {
@@ -217,19 +217,8 @@ export abstract class OpenAICompatibleProvider implements IProvider {
 		context?: any,
 		options: ChatOptions = {},
 	): Promise<ChatResult> {
-		const debugLogPath = '/home/kali/modelpilot/openai_compatible_debug.log';
-		const log = (msg: string) => {
-			try {
-				fs.appendFileSync(debugLogPath, `[${new Date().toISOString()}] [${this.name}] ${msg}\n`);
-			} catch {}
-		};
-		const safeStr = (obj: any): string => {
-			try {
-				return JSON.stringify(obj);
-			} catch (e: any) {
-				return `[Serialization Error: ${e.message}]`;
-			}
-		};
+		const log = (msg: string) => debugLog(this.name, msg);
+		const safeStr = (obj: any): string => safeSerialize(obj);
 		log(`chat() called for model: ${modelId}. Options: ${safeStr({ maxTokens: options.maxTokens, stream: options.stream })}. Messages: ${safeStr(messages)}`);
 		try {
 			const res = await this.chatInternal(modelId, messages, tools, context, options);
