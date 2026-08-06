@@ -42,6 +42,7 @@ import { SearchPanel } from './webview/SearchPanel';
 import { ModelPilotChatProvider } from './chatProvider';
 import { ChatResult } from './providers/IProvider';
 import { initDebugLogger, debugLog, safeSerialize } from './debug';
+import { InlineCompletions } from './completion/InlineCompletions';
 
 function runGit(args: string[], cwd: string): Promise<{ success: boolean; stdout: string; stderr: string }> {
 	return new Promise((resolve) => {
@@ -1999,6 +2000,18 @@ export function activate(context: vscode.ExtensionContext) {
 
 	const participant = vscode.chat.createChatParticipant('modelpilot.chatParticipant', handler);
 	participant.iconPath = vscode.Uri.joinPath(context.extensionUri, 'images', 'icon.png');
+
+	// Inline code completions (ghost text suggestions as you type)
+	const inlineCompletions = new InlineCompletions(sm, registry);
+	context.subscriptions.push(
+		inlineCompletions.register(),
+		vscode.commands.registerCommand('modelpilot.toggleInlineCompletions', async () => {
+			const cfg = vscode.workspace.getConfiguration('modelpilot');
+			const current = cfg.get<boolean>('inlineCompletions.enabled', true);
+			await cfg.update('inlineCompletions.enabled', !current, vscode.ConfigurationTarget.Global);
+			vscode.window.showInformationMessage(`ModelPilot inline completions ${current ? 'disabled' : 'enabled'}.`);
+		}),
+	);
 
 	context.subscriptions.push(
 		participant,

@@ -121,6 +121,10 @@
       {
         "command": "modelpilot.showSearch",
         "title": "ModelPilot: Open Code Search Panel & Indexer"
+      },
+      {
+        "command": "modelpilot.toggleInlineCompletions",
+        "title": "ModelPilot: Toggle Inline Code Completions"
       }
     ],
     "keybindings": [
@@ -241,6 +245,44 @@
           "default": {},
           "description": "Configure Model Context Protocol (MCP) servers. The keys are server names, and values are execution configs containing command, args, and optional env.",
           "order": 11
+        },
+        "modelpilot.inlineCompletions.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable inline code completions (ghost text) as you type. Uses the fastest configured model via the smart Router.",
+          "order": 12
+        },
+        "modelpilot.inlineCompletions.debounceMs": {
+          "type": "number",
+          "default": 350,
+          "minimum": 0,
+          "maximum": 3000,
+          "description": "Delay in milliseconds after the last keystroke before a completion is requested. Lower values feel faster but consume more API tokens.",
+          "order": 13
+        },
+        "modelpilot.inlineCompletions.maxTokens": {
+          "type": "number",
+          "default": 96,
+          "minimum": 16,
+          "maximum": 512,
+          "description": "Maximum number of tokens to generate per inline completion.",
+          "order": 14
+        },
+        "modelpilot.inlineCompletions.contextPrefixLines": {
+          "type": "number",
+          "default": 60,
+          "minimum": 10,
+          "maximum": 500,
+          "description": "How many lines of code before the cursor are sent as context for each completion.",
+          "order": 15
+        },
+        "modelpilot.inlineCompletions.contextSuffixChars": {
+          "type": "number",
+          "default": 400,
+          "minimum": 0,
+          "maximum": 2000,
+          "description": "How many characters after the cursor are sent as context for each completion (helps mid-expression completions).",
+          "order": 16
         }
       }
     },
