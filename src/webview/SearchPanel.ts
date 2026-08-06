@@ -454,6 +454,21 @@ export class SearchPanel {
 	<script>
 		const vscode = acquireVsCodeApi();
 
+		function escapeHtml(s) {
+			return String(s).replace(/[&<>"']/g, function (c) {
+				return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+			});
+		}
+
+		function attrJsString(s) {
+			return String(s)
+				.replace(/&/g, '&amp;')
+				.replace(/"/g, '&quot;')
+				.replace(/[\\r\\n]+/g, ' ')
+				.replace(/\\\\/g, '\\\\\\\\')
+				.replace(/'/g, "\\\\'");
+		}
+
 		function handleKey(e) {
 			if (e.key === 'Enter') {
 				runSearch();
@@ -485,7 +500,7 @@ export class SearchPanel {
 				const list = document.getElementById('results-list');
 
 				if (message.error) {
-					list.innerHTML = '<div class="no-results" style="color: var(--danger)">Error: ' + message.error + '</div>';
+					list.innerHTML = '<div class="no-results" style="color: var(--danger)">Error: ' + escapeHtml(message.error) + '</div>';
 					return;
 				}
 
@@ -495,7 +510,7 @@ export class SearchPanel {
 				}
 
 				const query = document.getElementById('search-input').value.trim();
-				const escapedQuery = query.replace(/[-\\/\\\\^$*+?.()|[\\]{}]/g, '\\\\$&');
+				const escapedQuery = escapeHtml(query).replace(/[-\\/\\\\^$*+?.()|[\\]{}]/g, '\\\\$&');
 				const regex = new RegExp('(' + escapedQuery + ')', 'gi');
 
 				let html = '';
@@ -503,15 +518,15 @@ export class SearchPanel {
 					html += '<div class="result-card">';
 					html += '  <div class="result-header">';
 					html += '    <div class="file-info">';
-					html += '      <span class="filename">' + file.filename + '</span>';
-					html += '      <span class="filepath">' + file.relativepath + '</span>';
+					html += '      <span class="filename">' + escapeHtml(file.filename) + '</span>';
+					html += '      <span class="filepath">' + escapeHtml(file.relativepath) + '</span>';
 					html += '    </div>';
 					html += '  </div>';
 					html += '  <div class="matches-list">';
 
 					file.matches.forEach(m => {
-						const highlighted = m.text.replace(regex, '<span class="highlight">$1</span>');
-						html += '    <div class="match-item" onclick="openFile(\\'' + file.filepath.replace(/\\\\/g, '\\\\\\\\') + '\\', ' + m.line + ')">';
+						const highlighted = escapeHtml(m.text).replace(regex, '<span class="highlight">$1</span>');
+						html += '    <div class="match-item" onclick="openFile(\\'' + attrJsString(file.filepath) + '\\', ' + m.line + ')">';
 						html += '      <span class="match-line">Line ' + m.line + '</span>';
 						html += '      <span class="match-content">' + highlighted + '</span>';
 						html += '      <button class="btn-open">Open</button>';

@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { exec } from 'child_process';
+import { exec, execFile } from 'child_process';
 
 let availableSystemTools: string[] = [];
 import { NvidiaProvider } from './providers/NvidiaProvider';
@@ -42,6 +42,18 @@ import { SearchPanel } from './webview/SearchPanel';
 import { ModelPilotChatProvider } from './chatProvider';
 import { ChatResult } from './providers/IProvider';
 import { initDebugLogger, debugLog, safeSerialize } from './debug';
+
+function runGit(args: string[], cwd: string): Promise<{ success: boolean; stdout: string; stderr: string }> {
+	return new Promise((resolve) => {
+		execFile('git', args, { cwd }, (err: any, stdout: string, stderr: string) => {
+			resolve({
+				success: !err,
+				stdout: (stdout || '').trim(),
+				stderr: (stderr || '').trim(),
+			});
+		});
+	});
+}
 
 async function recordUsage(
 	chatResult: ChatResult,
@@ -531,14 +543,9 @@ RULES:
 				return;
 			}
 			const rootPath = workspaceFolders[0].uri.fsPath;
-			const cp = require('child_process');
 
 			// Check for changes (tracked and untracked)
-			const diffStatus = await new Promise<string>((resolve) => {
-				cp.exec('git status --porcelain', { cwd: rootPath }, (err: any, stdout: string) => {
-					resolve(stdout.trim());
-				});
-			});
+			const diffStatus = (await runGit(['status', '--porcelain'], rootPath)).stdout;
 
 			if (!diffStatus) {
 				response.markdown('ℹ️ **No changes detected.** Your repository is clean.');
@@ -546,11 +553,7 @@ RULES:
 			}
 
 			// Get the diff of staged & unstaged changes
-			const gitDiff = await new Promise<string>((resolve) => {
-				cp.exec('git diff HEAD', { cwd: rootPath }, (err: any, stdout: string) => {
-					resolve(stdout.trim());
-				});
-			});
+			const gitDiff = (await runGit(['diff', 'HEAD'], rootPath)).stdout;
 
 			if (!gitDiff) {
 				response.markdown('ℹ️ **No modifications detected in tracked files.**');
@@ -613,16 +616,13 @@ RULES:
 
 			response.progress('Committing changes...');
 			
-			// Commit the changes
-			const commitOutput = await new Promise<{ success: boolean; output: string }>((resolve) => {
-				cp.exec(`git commit -a -m "${commitMessage.replace(/"/g, '\\"')}"`, { cwd: rootPath }, (err: any, stdout: string, stderr: string) => {
-					if (err) {
-						resolve({ success: false, output: stderr || stdout || err.message });
-					} else {
-						resolve({ success: true, output: stdout });
-					}
-				});
-			});
+			// Commit the changes (args passed directly - no shell, so the
+			// model-generated message can never inject shell commands)
+			const commitExec = await runGit(['commit', '-a', '-m', commitMessage], rootPath);
+			const commitOutput = {
+				success: commitExec.success,
+				output: commitExec.stderr || commitExec.stdout,
+			};
 
 			if (commitOutput.success) {
 				response.markdown(`🚀 **Successfully committed changes!**\n\n**Commit Message:**\n\`${commitMessage}\`\n\n\`\`\`\n${commitOutput.output.trim()}\n\`\`\``);
@@ -2544,17 +2544,8 @@ export function activate(context: vscode.ExtensionContext) {
 				return;
 			}
 
-			const checkModified = await new Promise<boolean>((resolve) => {
-				exec(`git status --porcelain "${filePath}"`, { cwd: rootPath }, (err, stdout) => {
-					if (err) {
-						resolve(false);
-					} else {
-						resolve(stdout.trim().length > 0);
-					}
-				});
-			});
-
-			if (!checkModified) {
+			const checkModified = await runGit(['status', '--porcelain', '--', filePath], rootPath);
+			if (!checkModified.success || checkModified.stdout.length === 0) {
 				return;
 			}
 
@@ -2577,15 +2568,7 @@ export function activate(context: vscode.ExtensionContext) {
 				}
 			}
 
-			const gitDiff = await new Promise<string>((resolve) => {
-				exec(`git diff HEAD -- "${filePath}"`, { cwd: rootPath }, (err, stdout) => {
-					if (err) {
-						resolve('');
-					} else {
-						resolve(stdout.trim());
-					}
-				});
-			});
+			const gitDiff = (await runGit(['diff', 'HEAD', '--', filePath], rootPath)).stdout;
 
 			if (!gitDiff) {
 				return;
@@ -2654,20 +2637,23 @@ export function activate(context: vscode.ExtensionContext) {
 							}
 						} catch {}
 
-						const cleanMsg = commitMessage.replace(/"/g, '\\"');
 						vscode.window.showInformationMessage(
 							`ModelPilot suggested commit message: "${commitMessage}"\n\nSummary:\n${summary}`,
 							'Commit Now',
 							'Copy to Clipboard'
 						).then(async (selection) => {
 							if (selection === 'Commit Now') {
-								exec(`git add "${filePath}" && git commit -m "${cleanMsg}"`, { cwd: rootPath }, (err, stdout, stderr) => {
-									if (err) {
-										vscode.window.showErrorMessage(`Failed to commit: ${stderr || err.message}`);
-									} else {
-										vscode.window.showInformationMessage(`Successfully committed changes to ${path.basename(filePath)}!`);
-									}
-								});
+								const addExec = await runGit(['add', '--', filePath], rootPath);
+								if (!addExec.success) {
+									vscode.window.showErrorMessage(`Failed to stage changes: ${addExec.stderr}`);
+									return;
+								}
+								const commitExec = await runGit(['commit', '-m', commitMessage], rootPath);
+								if (commitExec.success) {
+									vscode.window.showInformationMessage(`Successfully committed changes to ${path.basename(filePath)}!`);
+								} else {
+									vscode.window.showErrorMessage(`Failed to commit: ${commitExec.stderr}`);
+								}
 							} else if (selection === 'Copy to Clipboard') {
 								await vscode.env.clipboard.writeText(commitMessage);
 								vscode.window.showInformationMessage('Commit message copied to clipboard.');

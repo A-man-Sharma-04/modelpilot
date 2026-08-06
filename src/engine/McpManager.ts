@@ -33,10 +33,7 @@ export class McpServerConnection {
 		const args = this.config.args || [];
 		
 		try {
-			this.child = McpServerConnection.spawn(this.config.command, args, {
-				env,
-				shell: true,
-			});
+			this.child = McpServerConnection.spawnMcp(this.config.command, args, { env });
 		} catch (err: any) {
 			throw new Error(`Failed to spawn MCP server "${this.name}": ${err.message}`);
 		}
@@ -193,6 +190,20 @@ export class McpServerConnection {
 	}
 
 	public static spawn(command: string, args: string[], options: any): childProcess.ChildProcess {
+		return childProcess.spawn(command, args, options);
+	}
+
+	/**
+	 * Spawns an MCP server command WITHOUT a shell so that arguments are
+	 * passed verbatim (no shell metacharacter interpretation or re-quoting).
+	 * Windows `.cmd`/`.bat` shims (e.g. npx.cmd) must be launched through
+	 * cmd.exe, so those are routed via a single quoted cmd line.
+	 */
+	public static spawnMcp(command: string, args: string[], options: childProcess.SpawnOptions): childProcess.ChildProcess {
+		if (process.platform === 'win32' && /\.(cmd|bat)$/i.test(command)) {
+			const quoted = [command, ...args].map(a => `"${String(a).replace(/"/g, '\\"')}"`).join(' ');
+			return childProcess.spawn('cmd.exe', ['/d', '/s', '/c', quoted], options);
+		}
 		return childProcess.spawn(command, args, options);
 	}
 }

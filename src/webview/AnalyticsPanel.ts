@@ -1046,6 +1046,12 @@ export class AnalyticsPanel {
 	<script>
 		const vscode = acquireVsCodeApi();
 
+		function escapeHtml(s) {
+			return String(s).replace(/[&<>"']/g, function (c) {
+				return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+			});
+		}
+
 		// Local copy of key states with countdown functions
 		let activeCooldowns = {
 			nvidia: [],
@@ -1155,7 +1161,7 @@ export class AnalyticsPanel {
 
 			coordinates.forEach((c) => {
 				html += '<circle cx="' + c.x + '" cy="' + c.ySavings + '" r="6" fill="var(--bg-primary)" stroke="var(--accent-primary)" stroke-width="2" style="cursor: pointer;" ' +
-					'onmouseover="showChartTooltip(event, \'' + c.raw.date + '\', \'' + c.raw.savings + '\', \'' + c.raw.tokens + '\', \'' + c.raw.requests + '\')" ' +
+					'onmouseover="showChartTooltip(event, \\'' + c.raw.date + '\\', \\'' + c.raw.savings + '\\', \\'' + c.raw.tokens + '\\', \\'' + c.raw.requests + '\\')" ' +
 					'onmouseout="hideChartTooltip()" />';
 			});
 
@@ -1322,8 +1328,8 @@ export class AnalyticsPanel {
 						const avgLatency = m.totalLatencyMs && m.requests ? (m.totalLatencyMs / m.requests / 1000).toFixed(2) + 's' : 'N/A';
 						tableHtml += \`
 							<tr>
-								<td style="font-weight: 500;">\${m.displayName || m.modelId}</td>
-								<td><span class="badge-provider \${m.provider.toLowerCase()}">\${m.provider}</span></td>
+								<td style="font-weight: 500;">\${escapeHtml(m.displayName || m.modelId)}</td>
+								<td><span class="badge-provider \${m.provider.toLowerCase()}">\${escapeHtml(m.provider)}</span></td>
 								<td>\${m.requests}</td>
 								<td>\${m.totalTokens.toLocaleString()}</td>
 								<td>\${avgLatency}</td>
@@ -1359,7 +1365,7 @@ export class AnalyticsPanel {
 				const remaining = Math.max(0, Math.ceil((c.endTime - Date.now()) / 1000));
 				html += \`
 					<div class="cooldown-item">
-						<span style="color: var(--text-secondary);">\${c.keyMask}</span>
+						<span style="color: var(--text-secondary);">\${escapeHtml(c.keyMask)}</span>
 						<span class="cooldown-timer">\${remaining}s remaining</span>
 					</div>
 				\`;

@@ -577,6 +577,12 @@ export class ModelArenaPanel {
 		const vscode = acquireVsCodeApi();
 		let modelsCached = [];
 
+		function escapeHtml(s) {
+			return String(s).replace(/[&<>"']/g, function (c) {
+				return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+			});
+		}
+
 		function startComparison() {
 			const prompt = document.getElementById('prompt-input').value.trim();
 			const selectA = document.getElementById('select-model-a');
@@ -630,7 +636,7 @@ export class ModelArenaPanel {
 
 				let html = '';
 				message.models.forEach((m, idx) => {
-					const label = '[' + m.provider.toUpperCase() + '] ' + m.displayName;
+					const label = '[' + escapeHtml(m.provider).toUpperCase() + '] ' + escapeHtml(m.displayName);
 					html += '<option value="' + idx + '">' + label + '</option>';
 				});
 

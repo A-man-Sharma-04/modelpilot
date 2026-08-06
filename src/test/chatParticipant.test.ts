@@ -3087,7 +3087,7 @@ suite('ModelPilot Chat Participant Integration Tests', () => {
 
 	test('should return no changes detected for /commit when repository is clean', async () => {
 		const cp = require('child_process');
-		const originalExec = cp.exec;
+		const originalExec = cp.execFile;
 		const originalWorkspaceFolders = vscode.workspace.workspaceFolders;
 		
 		Object.defineProperty(vscode.workspace, 'workspaceFolders', {
@@ -3095,9 +3095,9 @@ suite('ModelPilot Chat Participant Integration Tests', () => {
 			configurable: true
 		});
 
-		cp.exec = (cmd: string, options: any, callback: any) => {
-			if (cmd.includes('git status')) {
-				callback(null, ''); // clean
+		cp.execFile = (file: string, args: string[], options: any, callback: any) => {
+			if (args[0] === 'status') {
+				callback(null, '', ''); // clean
 			} else {
 				callback(new Error('Unexpected command'));
 			}
@@ -3140,7 +3140,7 @@ suite('ModelPilot Chat Participant Integration Tests', () => {
 			const fullMarkdown = markdowns.join('\n');
 			assert.ok(fullMarkdown.includes('No changes detected'), `Expected "No changes detected", got: "${fullMarkdown}"`);
 		} finally {
-			cp.exec = originalExec;
+			cp.execFile = originalExec;
 			Object.defineProperty(vscode.workspace, 'workspaceFolders', {
 				get: () => originalWorkspaceFolders,
 				configurable: true
@@ -3150,7 +3150,7 @@ suite('ModelPilot Chat Participant Integration Tests', () => {
 
 	test('should generate commit message and commit changes when they exist', async () => {
 		const cp = require('child_process');
-		const originalExec = cp.exec;
+		const originalExec = cp.execFile;
 		const originalWorkspaceFolders = vscode.workspace.workspaceFolders;
 		
 		Object.defineProperty(vscode.workspace, 'workspaceFolders', {
@@ -3159,16 +3159,16 @@ suite('ModelPilot Chat Participant Integration Tests', () => {
 		});
 
 		let gitCommitCmdRun = '';
-		cp.exec = (cmd: string, options: any, callback: any) => {
-			if (cmd.includes('git status')) {
-				callback(null, ' M package.json');
-			} else if (cmd.includes('git diff')) {
-				callback(null, 'diff --git a/package.json b/package.json');
-			} else if (cmd.includes('git commit')) {
-				gitCommitCmdRun = cmd;
-				callback(null, '[master abc123f] feat: update package');
+		cp.execFile = (file: string, args: string[], options: any, callback: any) => {
+			if (args[0] === 'status') {
+				callback(null, ' M package.json', '');
+			} else if (args[0] === 'diff') {
+				callback(null, 'diff --git a/package.json b/package.json', '');
+			} else if (args[0] === 'commit') {
+				gitCommitCmdRun = file + ' ' + args.join(' ');
+				callback(null, '[master abc123f] feat: update package', '');
 			} else {
-				callback(new Error('Unexpected command: ' + cmd));
+				callback(new Error('Unexpected command: ' + file + ' ' + args.join(' ')));
 			}
 		};
 
@@ -3216,7 +3216,7 @@ suite('ModelPilot Chat Participant Integration Tests', () => {
 			assert.ok(fullMarkdown.includes('feat(core): bump version'));
 			assert.ok(gitCommitCmdRun.includes('feat(core): bump version'));
 		} finally {
-			cp.exec = originalExec;
+			cp.execFile = originalExec;
 			Router.prototype.route = originalRouteMethod;
 			Object.defineProperty(vscode.workspace, 'workspaceFolders', {
 				get: () => originalWorkspaceFolders,
@@ -3694,13 +3694,14 @@ suite('ModelPilot Chat Participant Integration Tests', () => {
 		await cfg.update('autoGenerateCommitMessageOnSave', true, vscode.ConfigurationTarget.Workspace);
 
 		let execCommandsRun: string[] = [];
-		cp.exec = (cmd: string, options: any, callback: any) => {
+		cp.execFile = (file: string, args: string[], options: any, callback: any) => {
+			const cmd = file + ' ' + args.join(' ');
 			execCommandsRun.push(cmd);
-			if (cmd.includes('git status')) {
+			if (args[0] === 'status') {
 				callback(null, ' M test-auto-save-commit.txt');
-			} else if (cmd.includes('git diff')) {
+			} else if (args[0] === 'diff') {
 				callback(null, 'diff --git a/test-auto-save-commit.txt b/test-auto-save-commit.txt\n--- a/test-auto-save-commit.txt\n+++ b/test-auto-save-commit.txt\n@@ -1 +1 @@\n-initial content\n+modified content');
-			} else if (cmd.includes('git add') && cmd.includes('git commit')) {
+			} else if (args[0] === 'add' || args[0] === 'commit') {
 				callback(null, '[master abc123f] feat(test): update file');
 			} else {
 				callback(null, '');
@@ -3789,7 +3790,7 @@ suite('ModelPilot Chat Participant Integration Tests', () => {
 				fs.unlinkSync(testFilePath);
 			} catch {}
 			await cfg.update('autoGenerateCommitMessageOnSave', undefined, vscode.ConfigurationTarget.Workspace);
-			cp.exec = originalExec;
+			cp.execFile = originalExec;
 			Router.prototype.route = originalRouteMethod;
 			(vscode.window as any).showInformationMessage = originalShowInfo;
 			Object.defineProperty(vscode.extensions, 'getExtension', {
