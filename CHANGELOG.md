@@ -6,6 +6,22 @@
 - **Inline Code Completions**: Real-time ghost-text code suggestions as you type in code editors using low-latency model routing (Groq, Cerebras). Includes debouncing, cancellation, and language filtering (`modelpilot.inlineCompletions`).
 - **Code Search Panel & Indexer**: Workspace code search webview panel with file filters and regex search capabilities.
 - **Context Compression Engine**: Strips comments and whitespace from codebase context files to minimize token consumption (`modelpilot.compressContext`).
+- **Lightbulb Code Diagnostics Quick Fix**: "Fix with ModelPilot" now appears automatically on editor errors and warnings via the VS Code lightbulb menu, no code selection required.
+- **Refactor Selection Command**: New `Ctrl+Alt+R` shortcut to refactor selected code for readability, maintainability, and modern patterns.
+- **Generate Docstring Command**: Generate comprehensive JSDoc/docstring for selected code, available in the right-click context menu and code actions.
+- **Curated Prompt Templates**: 10 pre-built prompt templates (`Ctrl+Alt+T`) for common workflows: unit tests, security audit, API client, regex explanation, performance optimization, documentation, code review, type generation, error handling, and modern syntax refactoring.
+- **Live Latency Counter**: Status bar displays last request latency in real-time, updated on every API call.
+- **Enhanced Conventional Commit Generator**: The `/commit` command now outputs structured JSON with inferred scope, imperative subject, optional body, and breaking change detection.
+- **Model Latency Benchmark**: New `ModelPilot: Benchmark Model Speeds` command tests all available models and ranks them by tokens/second with medal indicators.
+- **Workspace Context Pinning**: Pin files (`ModelPilot: Pin File to Context`) to always include them in every prompt context. Manage with unpin/list commands.
+- **Getting Started Walkthrough**: Interactive 6-step onboarding walkthrough that appears on first install, covering setup, chat modes, shortcuts, and advanced features.
+- **Comprehensive README**: Full feature documentation with command reference, shortcut tables, provider matrix, and configuration guide.
+
+### Accessibility
+- **ARIA Live Regions**: All webview panels (Analytics, Arena, Search) include `aria-live` regions and proper `role` attributes for screen reader support.
+- **High-Contrast Theme Sync**: Webview panels adapt to Windows High Contrast mode and `forced-colors` media query.
+- **Focus Ring Styling**: Visible `focus-visible` indicators on all interactive elements across all panels.
+- **Reduced Motion Support**: All animations respect `prefers-reduced-motion` system preference.
 
 ### Security & Hardening
 - **Parameterized Execution**: Hardened Git and MCP command execution against shell injection vulnerabilities.

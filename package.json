@@ -405,6 +405,84 @@
         "vendor": "modelpilot",
         "displayName": "ModelPilot (Free Models)"
       }
+    ],
+    "walkthroughs": [
+      {
+        "id": "modelpilot.gettingStarted",
+        "title": "Get Started with ModelPilot",
+        "description": "Set up multi-provider AI routing and unlock all productivity features in under 2 minutes.",
+        "steps": [
+          {
+            "id": "modelpilot.walkthrough.addApiKey",
+            "title": "Add Your First API Key",
+            "description": "ModelPilot routes your queries across NVIDIA NIM, Groq, Cerebras, OpenRouter, and Google AI Studio — all free tiers.\n\n[Add API Key](command:modelpilot.addApiKey)",
+            "media": {
+              "svg": "images/walkthrough-apikey.svg",
+              "altText": "Add API key to a provider"
+            },
+            "completionEvents": [
+              "onCommand:modelpilot.addApiKey"
+            ]
+          },
+          {
+            "id": "modelpilot.walkthrough.startChat",
+            "title": "Start Your First Chat",
+            "description": "Open VS Code Chat and type ``@modelpilot`` followed by your question. ModelPilot automatically picks the best model for your task.\n\n[Open ModelPilot Chat](command:modelpilot.newChat)",
+            "media": {
+              "svg": "images/walkthrough-chat.svg",
+              "altText": "Chat with ModelPilot"
+            },
+            "completionEvents": [
+              "onCommand:modelpilot.newChat"
+            ]
+          },
+          {
+            "id": "modelpilot.walkthrough.modes",
+            "title": "Learn the Chat Modes",
+            "description": "ModelPilot has powerful slash commands:\n\n- ``/ask`` — Conversational Q&A (no file changes)\n- ``/plan`` — Generate implementation plans\n- ``/agent`` — Autonomous agent with file & terminal tools\n- ``/terminal`` — Generate shell commands with Run buttons\n- ``/commit`` — Auto-generate conventional commits from diffs\n- ``/export`` — Save chat history as Markdown\n\n[Try Agent Mode](command:modelpilot.newChat)",
+            "media": {
+              "svg": "images/walkthrough-chat.svg",
+              "altText": "Chat modes overview"
+            }
+          },
+          {
+            "id": "modelpilot.walkthrough.shortcuts",
+            "title": "Master the Keyboard Shortcuts",
+            "description": "Speed up your workflow with these shortcuts:\n\n- ``Ctrl+Alt+M`` — New ModelPilot Chat\n- ``Ctrl+Alt+I`` — Inline Chat (edit code in place)\n- ``Ctrl+Alt+T`` — Prompt Templates (10 curated prompts)\n- ``Ctrl+Alt+R`` — Refactor Selection\n\nAlso: **right-click** selected code for Explain, Fix, Review, Tests, Refactor, and Docstring actions.\n\n[Try Prompt Templates](command:modelpilot.insertPromptTemplate)",
+            "media": {
+              "svg": "images/walkthrough-shortcuts.svg",
+              "altText": "Keyboard shortcuts reference"
+            },
+            "completionEvents": [
+              "onCommand:modelpilot.insertPromptTemplate"
+            ]
+          },
+          {
+            "id": "modelpilot.walkthrough.features",
+            "title": "Explore Advanced Features",
+            "description": "Unlock ModelPilot's full power:\n\n- **📊 Analytics** — Track token usage and cost savings\n- **⚡ Benchmark** — Rank all models by speed\n- **📌 Pin Context** — Always include key files in prompts\n- **🏟️ Arena** — Compare two models side-by-side\n- **🔍 Code Search** — Search workspace with regex\n- **🔌 MCP Servers** — Connect external tool servers\n\n[Open Analytics](command:modelpilot.showAnalytics)",
+            "media": {
+              "svg": "images/walkthrough-features.svg",
+              "altText": "Advanced features overview"
+            },
+            "completionEvents": [
+              "onCommand:modelpilot.showAnalytics"
+            ]
+          },
+          {
+            "id": "modelpilot.walkthrough.allCommands",
+            "title": "Discover All Commands",
+            "description": "Open the Command Palette (``Ctrl+Shift+P``) and type **\"ModelPilot\"** to see every available command:\n\n→ View Models, Refresh Models, Select Expert, Inline Chat, Benchmark, Pin/Unpin Context, Configure MCP, Compress File, Toggle Completions, and more.\n\n[View All Models](command:modelpilot.listModels)",
+            "media": {
+              "svg": "images/walkthrough-features.svg",
+              "altText": "Command palette with ModelPilot commands"
+            },
+            "completionEvents": [
+              "onCommand:modelpilot.listModels"
+            ]
+          }
+        ]
+      }
     ]
   },
   "scripts": {
