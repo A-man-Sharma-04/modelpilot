@@ -1,5 +1,5 @@
 import { LiveModel } from './IProvider';
-import { OpenAICompatibleProvider } from './OpenAICompatibleProvider';
+import { OpenAICompatibleProvider, isFuzzyModelMatch } from './OpenAICompatibleProvider';
 import { MODEL_PROFILES } from '../data/modelProfiles';
 
 const BASE_URL = 'https://integrate.api.nvidia.com/v1';
@@ -45,13 +45,13 @@ export class NvidiaProvider extends OpenAICompatibleProvider {
 
 		try {
 			const data = await response.json() as { data: { id: string }[] };
-			const liveIds = new Set(data.data.map((m: { id: string }) => m.id));
+			const liveIds = data.data.map((m: { id: string }) => m.id);
 
 			const result: LiveModel[] = MODEL_PROFILES
 				.filter(m => m.provider === 'nvidia')
 				.map(m => ({
 					id: m.id,
-					available: liveIds.has(m.id),
+					available: isFuzzyModelMatch(m.id, liveIds),
 				}));
 
 			return result;
@@ -60,6 +60,5 @@ export class NvidiaProvider extends OpenAICompatibleProvider {
 				.filter(m => m.provider === 'nvidia')
 				.map(m => ({ id: m.id, available: true }));
 		}
-
 	}
 }

@@ -412,10 +412,41 @@ export class SearchPanel {
 			border-radius: 2px;
 			padding: 0 2px;
 		}
+
+		/* Accessibility */
+		*:focus-visible {
+			outline: 2px solid var(--accent-primary);
+			outline-offset: 2px;
+		}
+		input:focus-visible, button:focus-visible, select:focus-visible {
+			box-shadow: 0 0 0 4px rgba(6, 182, 212, 0.25);
+		}
+		@media (forced-colors: active) {
+			:root {
+				--bg-primary: Canvas;
+				--bg-card: Canvas;
+				--border-color: CanvasText;
+				--text-primary: CanvasText;
+				--text-secondary: CanvasText;
+				--accent-primary: Highlight;
+			}
+			.header-card, .search-box, .result-item, .container {
+				border: 1px solid CanvasText !important;
+			}
+			input, button, select {
+				border: 1px solid ButtonText !important;
+			}
+		}
+		@media (prefers-reduced-motion: reduce) {
+			*, *::before, *::after {
+				animation-duration: 0.01ms !important;
+				transition-duration: 0.01ms !important;
+			}
+		}
 	</style>
 </head>
 <body>
-	<div class="container">
+	<div class="container" role="main" aria-label="ModelPilot Code Search">
 		<div class="header-card">
 			<h2 class="header-title">Code Search & Indexer</h2>
 			<p class="header-subtitle">Find occurrences of functions, variables, or patterns instantly across your workspace.</p>

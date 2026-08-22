@@ -478,10 +478,41 @@ export class ModelArenaPanel {
 			0%, 100% { transform: scale(0.8); opacity: 0.5; }
 			50% { transform: scale(1.2); opacity: 1; }
 		}
+
+		/* Accessibility */
+		*:focus-visible {
+			outline: 2px solid var(--accent-primary);
+			outline-offset: 2px;
+		}
+		button:focus-visible, select:focus-visible, textarea:focus-visible {
+			box-shadow: 0 0 0 4px rgba(6, 182, 212, 0.25);
+		}
+		@media (forced-colors: active) {
+			:root {
+				--bg-primary: Canvas;
+				--bg-card: Canvas;
+				--border-color: CanvasText;
+				--text-primary: CanvasText;
+				--text-secondary: CanvasText;
+				--accent-primary: Highlight;
+			}
+			.setup-card, .results-card, .container {
+				border: 1px solid CanvasText !important;
+			}
+			button, select {
+				border: 1px solid ButtonText !important;
+			}
+		}
+		@media (prefers-reduced-motion: reduce) {
+			*, *::before, *::after {
+				animation-duration: 0.01ms !important;
+				transition-duration: 0.01ms !important;
+			}
+		}
 	</style>
 </head>
 <body>
-	<div class="container">
+	<div class="container" role="main" aria-label="ModelPilot Model Comparison Arena">
 		<div class="dashboard-header">
 			<h2 class="header-title">Model Comparison Arena</h2>
 			<p class="header-subtitle">Evaluate latency, token metrics, and cost savings of different models side-by-side in real-time.</p>

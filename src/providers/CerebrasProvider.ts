@@ -1,5 +1,5 @@
 import { LiveModel, Message, Tool, ChatOptions, ChatResult } from './IProvider';
-import { OpenAICompatibleProvider } from './OpenAICompatibleProvider';
+import { OpenAICompatibleProvider, isFuzzyModelMatch } from './OpenAICompatibleProvider';
 import { MODEL_PROFILES } from '../data/modelProfiles';
 import { debugLog } from '../debug';
 
@@ -80,13 +80,12 @@ export class CerebrasProvider extends OpenAICompatibleProvider {
 			const data = await response.json() as { data: { id: string }[] };
 			const liveIds = data.data.map((m: { id: string }) => m.id);
 			log(`Successfully retrieved model IDs from Cerebras: ${JSON.stringify(liveIds)}`);
-			const liveIdsSet = new Set(liveIds);
 
 			const mapped = MODEL_PROFILES
 				.filter(m => m.provider === 'cerebras')
 				.map(m => ({
 					id: m.id,
-					available: liveIdsSet.has(m.id),
+					available: isFuzzyModelMatch(m.id, liveIds),
 				}));
 
 			for (const id of liveIds) {

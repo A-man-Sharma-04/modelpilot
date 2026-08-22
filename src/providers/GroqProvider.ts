@@ -1,5 +1,5 @@
 import { LiveModel } from './IProvider';
-import { OpenAICompatibleProvider } from './OpenAICompatibleProvider';
+import { OpenAICompatibleProvider, isFuzzyModelMatch } from './OpenAICompatibleProvider';
 import { MODEL_PROFILES } from '../data/modelProfiles';
 
 const BASE_URL = 'https://api.groq.com/openai/v1';
@@ -45,13 +45,13 @@ export class GroqProvider extends OpenAICompatibleProvider {
 
 		try {
 			const data = await response.json() as { data: { id: string }[] };
-			const liveIds = new Set(data.data.map((m: { id: string }) => m.id));
+			const liveIds = data.data.map((m: { id: string }) => m.id);
 
 			return MODEL_PROFILES
 				.filter(m => m.provider === 'groq')
 				.map(m => ({
 					id: m.id,
-					available: liveIds.has(m.id),
+					available: isFuzzyModelMatch(m.id, liveIds),
 				}));
 		} catch {
 			return MODEL_PROFILES

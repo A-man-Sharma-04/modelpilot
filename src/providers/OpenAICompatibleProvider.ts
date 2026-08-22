@@ -131,6 +131,32 @@ export function parseRetryAfter(errText: string, headers?: { get(name: string): 
 	return 10;
 }
 
+export function normalizeModelId(id: string): string {
+	return id
+		.toLowerCase()
+		.replace(/^[^/]+\//, '')
+		.replace(/:free$/, '')
+		.replace(/-(instruct|versatile|it|preview|latest|v\d+)$/, '')
+		.replace(/[^a-z0-9]/g, '');
+}
+
+export function isFuzzyModelMatch(profileId: string, liveIds: string[]): boolean {
+	if (liveIds.includes(profileId)) {
+		return true;
+	}
+	const normProfile = normalizeModelId(profileId);
+	if (!normProfile) {
+		return false;
+	}
+	for (const liveId of liveIds) {
+		const normLive = normalizeModelId(liveId);
+		if (normLive === normProfile || (normProfile.length >= 5 && (normLive.includes(normProfile) || normProfile.includes(normLive)))) {
+			return true;
+		}
+	}
+	return false;
+}
+
 export abstract class OpenAICompatibleProvider implements IProvider {
 	abstract readonly name: string;
 	abstract readonly baseUrl: string;

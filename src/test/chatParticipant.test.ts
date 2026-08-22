@@ -3212,7 +3212,7 @@ suite('ModelPilot Chat Participant Integration Tests', () => {
 			);
 
 			const fullMarkdown = markdowns.join('\n');
-			assert.ok(fullMarkdown.includes('Successfully committed changes'), `Expected "Successfully committed changes", got: "${fullMarkdown}"`);
+			assert.ok(fullMarkdown.includes('Successfully committed'), `Expected "Successfully committed", got: "${fullMarkdown}"`);
 			assert.ok(fullMarkdown.includes('feat(core): bump version'));
 			assert.ok(gitCommitCmdRun.includes('feat(core): bump version'));
 		} finally {

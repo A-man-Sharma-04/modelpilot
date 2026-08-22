@@ -729,13 +729,68 @@ export class AnalyticsPanel {
 			display: inline-block;
 			animation: pulse 2s infinite;
 		}
+
+		/* Accessibility: Focus ring styling */
+		*:focus-visible {
+			outline: 2px solid var(--accent-primary);
+			outline-offset: 2px;
+		}
+
+		button:focus-visible, a:focus-visible, [tabindex]:focus-visible {
+			outline: 2px solid var(--accent-primary);
+			outline-offset: 2px;
+			box-shadow: 0 0 0 4px rgba(6, 182, 212, 0.25);
+		}
+
+		/* High-contrast theme support */
+		@media (forced-colors: active) {
+			:root {
+				--bg-primary: Canvas;
+				--bg-card: Canvas;
+				--border-color: CanvasText;
+				--text-primary: CanvasText;
+				--text-secondary: CanvasText;
+				--accent-primary: Highlight;
+				--accent-secondary: Highlight;
+				--success: CanvasText;
+				--warning: CanvasText;
+				--danger: CanvasText;
+			}
+			.stat-card, .chart-section, .model-row, .container {
+				border: 1px solid CanvasText !important;
+			}
+			button, .btn-toggle, .btn-primary {
+				border: 1px solid ButtonText !important;
+			}
+		}
+
+		/* Reduced motion support */
+		@media (prefers-reduced-motion: reduce) {
+			*, *::before, *::after {
+				animation-duration: 0.01ms !important;
+				animation-iteration-count: 1 !important;
+				transition-duration: 0.01ms !important;
+			}
+		}
+
+		/* Screen reader only utility */
+		.sr-only {
+			position: absolute;
+			width: 1px;
+			height: 1px;
+			padding: 0;
+			margin: -1px;
+			overflow: hidden;
+			clip: rect(0, 0, 0, 0);
+			border: 0;
+		}
 	</style>
 </head>
 <body>
-	<div class="container">
-		<div class="dashboard-header">
+	<div class="container" role="main" aria-label="ModelPilot Analytics Dashboard">
+		<div class="dashboard-header" aria-live="polite">
 			<div class="header-title">Estimated Cost Savings</div>
-			<div class="savings-value" id="savings-display">$0.00</div>
+			<div class="savings-value" id="savings-display" aria-live="polite">$0.00</div>
 			<div class="header-subtitle">
 				By routing requests automatically to Groq and NVIDIA NIM free tiers, ModelPilot has cut your paid API token spend.
 			</div>

@@ -125,6 +125,34 @@
       {
         "command": "modelpilot.toggleInlineCompletions",
         "title": "ModelPilot: Toggle Inline Code Completions"
+      },
+      {
+        "command": "modelpilot.refactorSelection",
+        "title": "ModelPilot: Refactor Selection"
+      },
+      {
+        "command": "modelpilot.generateDocstring",
+        "title": "ModelPilot: Generate Docstring"
+      },
+      {
+        "command": "modelpilot.insertPromptTemplate",
+        "title": "ModelPilot: Insert Prompt Template"
+      },
+      {
+        "command": "modelpilot.benchmarkModels",
+        "title": "ModelPilot: Benchmark Model Speeds"
+      },
+      {
+        "command": "modelpilot.pinContextFile",
+        "title": "ModelPilot: Pin File to Context"
+      },
+      {
+        "command": "modelpilot.unpinContextFile",
+        "title": "ModelPilot: Unpin File from Context"
+      },
+      {
+        "command": "modelpilot.listPinnedContext",
+        "title": "ModelPilot: View Pinned Context Files"
       }
     ],
     "keybindings": [
@@ -139,6 +167,17 @@
         "key": "ctrl+alt+i",
         "mac": "cmd+alt+i",
         "when": "editorTextFocus"
+      },
+      {
+        "command": "modelpilot.insertPromptTemplate",
+        "key": "ctrl+alt+t",
+        "mac": "cmd+alt+t"
+      },
+      {
+        "command": "modelpilot.refactorSelection",
+        "key": "ctrl+alt+r",
+        "mac": "cmd+alt+r",
+        "when": "editorHasSelection"
       }
     ],
     "configuration": {
@@ -283,6 +322,13 @@
           "maximum": 2000,
           "description": "How many characters after the cursor are sent as context for each completion (helps mid-expression completions).",
           "order": 16
+        },
+        "modelpilot.pinnedContextFiles": {
+          "type": "array",
+          "default": [],
+          "items": { "type": "string" },
+          "description": "List of workspace-relative file paths that are always injected into prompt context.",
+          "order": 17
         }
       }
     },
@@ -340,6 +386,16 @@
         {
           "command": "modelpilot.generateTests",
           "group": "modelpilot@4",
+          "when": "editorHasSelection"
+        },
+        {
+          "command": "modelpilot.refactorSelection",
+          "group": "modelpilot@5",
+          "when": "editorHasSelection"
+        },
+        {
+          "command": "modelpilot.generateDocstring",
+          "group": "modelpilot@6",
           "when": "editorHasSelection"
         }
       ]

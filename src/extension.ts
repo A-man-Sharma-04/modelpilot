@@ -43,6 +43,8 @@ import { ModelPilotChatProvider } from './chatProvider';
 import { ChatResult } from './providers/IProvider';
 import { initDebugLogger, debugLog, safeSerialize } from './debug';
 import { InlineCompletions } from './completion/InlineCompletions';
+import { showPromptTemplates } from './commands/PromptTemplates';
+import { runBenchmark } from './commands/Benchmark';
 
 function runGit(args: string[], cwd: string): Promise<{ success: boolean; stdout: string; stderr: string }> {
 	return new Promise((resolve) => {
@@ -96,9 +98,18 @@ async function recordUsage(
 		inputMessages,
 		responseContent || chatResult.content
 	);
+
+	// Fire latency update event for status bar
+	if (latencyMs > 0) {
+		lastLatencyMs = latencyMs;
+		latencyEmitter.fire(latencyMs);
+	}
 }
 
 let globalExpertProfile = DEFAULT_EXPERT_ID;
+let lastLatencyMs = 0;
+const latencyEmitter = new vscode.EventEmitter<number>();
+export const onDidUpdateLatency = latencyEmitter.event;
 
 function getConfig() {
 	const cfg = vscode.workspace.getConfiguration('modelpilot');
@@ -191,6 +202,28 @@ function getWorkspaceContextText(): string {
 			const diagnosticsContext = getDiagnosticsContextText();
 			if (diagnosticsContext) {
 				contextStr += `\n${diagnosticsContext}`;
+			}
+
+			// Inject pinned context files
+			try {
+				const pinnedFiles = vscode.workspace.getConfiguration('modelpilot').get<string[]>('pinnedContextFiles', []);
+				if (pinnedFiles.length > 0) {
+					contextStr += `\n[Pinned Context Files]\n`;
+					for (const relPath of pinnedFiles) {
+						try {
+							const absPath = path.join(root, relPath);
+							const content = fs.readFileSync(absPath, 'utf8');
+							const truncated = content.length > 4000
+								? content.slice(0, 4000) + '\n... [truncated]'
+								: content;
+							contextStr += `--- ${relPath} ---\n${truncated}\n\n`;
+						} catch {
+							contextStr += `--- ${relPath} --- (file not found or unreadable)\n\n`;
+						}
+					}
+				}
+			} catch {
+				// Ignore pinned context errors
 			}
 		} else {
 			contextStr += `No open workspace folder.\n`;
@@ -592,22 +625,63 @@ RULES:
 				return;
 			}
 
-			const commitSystemPrompt = `You are a git commit message generator. Based on the git diff provided, write a single-line commit message following the Conventional Commits specification (e.g. 'feat(terminal): add run button'). Do NOT include any explanations, markdown formatting, or extra text. Output ONLY the commit message line itself.`;
+			const commitSystemPrompt = `You are an expert git commit message generator following Conventional Commits specification.
+Based on the git diff, generate a structured commit in this exact JSON format:
+{
+  "type": "feat|fix|refactor|docs|test|chore|perf|style|ci|build",
+  "scope": "inferred from changed files (e.g. 'auth', 'api', 'ui')",
+  "subject": "imperative mood, lowercase, no period, max 72 chars",
+  "body": "optional 1-2 sentence description of WHY the change was made",
+  "breaking": false
+}
+
+Rules:
+- type MUST be one of: feat, fix, refactor, docs, test, chore, perf, style, ci, build
+- scope should be inferred from the most relevant directory or module name in the diff
+- subject must be imperative mood (\"add\" not \"added\"), lowercase, no trailing period
+- body should explain the motivation if the change is non-trivial (otherwise empty string)
+- breaking should be true only if the change breaks backward compatibility
+- Output ONLY raw JSON, no markdown, no explanations`;
 
 			const commitResult = await router.route(recs, [
 				{ role: 'system', content: commitSystemPrompt },
 				{ role: 'user', content: `Here is the git diff:\n\n\`\`\`diff\n${truncatedDiff}\n\`\`\`` }
 			]);
 
-			let commitMessage = commitResult.content || '';
-			commitMessage = commitMessage.replace(/<think>[\s\S]*?(?:<\/think>|$)/gi, '');
-			commitMessage = commitMessage.trim();
-			// Remove surrounding quotes or backticks if model added them
-			if (commitMessage.startsWith('"') && commitMessage.endsWith('"')) {
-				commitMessage = commitMessage.slice(1, -1).trim();
+			let rawContent = commitResult.content || '';
+			rawContent = rawContent.replace(/<think>[\s\S]*?(?:<\/think>|$)/gi, '').trim();
+
+			let commitMessage = '';
+			let commitBody = '';
+			let isBreaking = false;
+
+			try {
+				// Extract JSON from response
+				const startIdx = rawContent.indexOf('{');
+				const endIdx = rawContent.lastIndexOf('}');
+				if (startIdx !== -1 && endIdx !== -1 && endIdx > startIdx) {
+					const jsonStr = rawContent.slice(startIdx, endIdx + 1);
+					const parsed = JSON.parse(jsonStr);
+					const type = (parsed.type || 'chore').toLowerCase();
+					const scope = parsed.scope ? `(${parsed.scope})` : '';
+					const breakingMark = parsed.breaking ? '!' : '';
+					commitMessage = `${type}${scope}${breakingMark}: ${parsed.subject || 'update'}`;
+					commitBody = parsed.body || '';
+					isBreaking = !!parsed.breaking;
+				}
+			} catch {
+				// Fallback: treat the raw content as the commit message
 			}
-			if (commitMessage.startsWith('`') && commitMessage.endsWith('`')) {
-				commitMessage = commitMessage.slice(1, -1).trim();
+
+			if (!commitMessage) {
+				// Fallback: clean up raw text as commit message
+				commitMessage = rawContent.split('\n')[0].trim();
+				if (commitMessage.startsWith('"') && commitMessage.endsWith('"')) {
+					commitMessage = commitMessage.slice(1, -1).trim();
+				}
+				if (commitMessage.startsWith('`') && commitMessage.endsWith('`')) {
+					commitMessage = commitMessage.slice(1, -1).trim();
+				}
 			}
 
 			if (!commitMessage) {
@@ -615,20 +689,28 @@ RULES:
 				return;
 			}
 
+			// Show preview with option to edit before committing
+			const breakingLabel = isBreaking ? ' ⚠️ **BREAKING CHANGE**' : '';
+			response.markdown(`📝 **Generated Commit Message:**${breakingLabel}\n\n\`${commitMessage}\`\n${commitBody ? `\n> ${commitBody}\n` : ''}`);
+
 			response.progress('Committing changes...');
 			
-			// Commit the changes (args passed directly - no shell, so the
-			// model-generated message can never inject shell commands)
-			const commitExec = await runGit(['commit', '-a', '-m', commitMessage], rootPath);
+			// Build git commit args with optional body
+			const commitArgs = ['commit', '-a', '-m', commitMessage];
+			if (commitBody) {
+				commitArgs.push('-m', commitBody);
+			}
+
+			const commitExec = await runGit(commitArgs, rootPath);
 			const commitOutput = {
 				success: commitExec.success,
 				output: commitExec.stderr || commitExec.stdout,
 			};
 
 			if (commitOutput.success) {
-				response.markdown(`🚀 **Successfully committed changes!**\n\n**Commit Message:**\n\`${commitMessage}\`\n\n\`\`\`\n${commitOutput.output.trim()}\n\`\`\``);
+				response.markdown(`\n🚀 **Successfully committed!**\n\n\`\`\`\n${commitOutput.output.trim()}\n\`\`\``);
 			} else {
-				response.markdown(`❌ **Failed to commit changes:**\n\n\`\`\`\n${commitOutput.output.trim()}\n\`\`\``);
+				response.markdown(`\n❌ **Failed to commit changes:**\n\n\`\`\`\n${commitOutput.output.trim()}\n\`\`\``);
 			}
 		} catch (err: any) {
 			response.markdown(`❌ **Commit generation failed:** ${err.message || String(err)}`);
@@ -1926,6 +2008,13 @@ export function activate(context: vscode.ExtensionContext) {
 	const statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
 	statusBarItem.command = 'modelpilot.showAnalytics';
 	
+	// Live latency/speed status bar
+	const latencyStatusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 99);
+	latencyStatusBar.text = '$(dashboard) --ms';
+	latencyStatusBar.tooltip = 'ModelPilot: Last request latency · Click to benchmark';
+	latencyStatusBar.command = 'modelpilot.benchmarkModels';
+	latencyStatusBar.show();
+
 	function updateStatusBar() {
 		const savings = analyticsManager.getSavingsString();
 		statusBarItem.text = `$(zap) ModelPilot: ${savings} Saved`;
@@ -1938,7 +2027,18 @@ export function activate(context: vscode.ExtensionContext) {
 		updateStatusBar();
 	});
 
-	context.subscriptions.push(statusBarItem, analyticsSub);
+	context.subscriptions.push(statusBarItem, latencyStatusBar, analyticsSub);
+
+	// Subscribe latency status bar to live updates
+	const latencySub = onDidUpdateLatency((ms) => {
+		if (ms >= 1000) {
+			latencyStatusBar.text = `$(dashboard) ${(ms / 1000).toFixed(1)}s`;
+		} else {
+			latencyStatusBar.text = `$(dashboard) ${ms}ms`;
+		}
+		latencyStatusBar.tooltip = `ModelPilot: Last request latency ${ms}ms · Click to benchmark all models`;
+	});
+	context.subscriptions.push(latencySub);
 
 	mcpManager.initializeFromConfig();
 	context.subscriptions.push(
@@ -2267,6 +2367,79 @@ export function activate(context: vscode.ExtensionContext) {
 		}),
 		vscode.commands.registerCommand('modelpilot.generateTests', () => {
 			return runInlineAction('Generate robust unit tests for the following code, covering positive, negative, and edge cases');
+		}),
+
+		vscode.commands.registerCommand('modelpilot.refactorSelection', () => {
+			return runInlineAction('Refactor the following code for better readability, maintainability, and modern best practices. Keep the same behavior');
+		}),
+		vscode.commands.registerCommand('modelpilot.generateDocstring', () => {
+			return runInlineAction('Generate comprehensive documentation comments (JSDoc/docstring/appropriate format) for the following code. Include parameter descriptions, return types, and usage examples');
+		}),
+
+		vscode.commands.registerCommand('modelpilot.insertPromptTemplate', () => {
+			return showPromptTemplates();
+		}),
+
+		vscode.commands.registerCommand('modelpilot.benchmarkModels', () => {
+			return runBenchmark(sm, registry);
+		}),
+
+		// Workspace Context Pinning commands
+		vscode.commands.registerCommand('modelpilot.pinContextFile', async () => {
+			const editor = vscode.window.activeTextEditor;
+			if (!editor) {
+				vscode.window.showWarningMessage('No active editor found.');
+				return;
+			}
+			const folders = vscode.workspace.workspaceFolders;
+			if (!folders || folders.length === 0) {
+				vscode.window.showWarningMessage('No workspace folder open.');
+				return;
+			}
+			const relPath = path.relative(folders[0].uri.fsPath, editor.document.uri.fsPath);
+			if (relPath.startsWith('..') || path.isAbsolute(relPath)) {
+				vscode.window.showWarningMessage('File is outside the workspace.');
+				return;
+			}
+			const cfg = vscode.workspace.getConfiguration('modelpilot');
+			const pinned: string[] = [...cfg.get<string[]>('pinnedContextFiles', [])];
+			if (pinned.includes(relPath)) {
+				vscode.window.showInformationMessage(`"${relPath}" is already pinned.`);
+				return;
+			}
+			pinned.push(relPath);
+			await cfg.update('pinnedContextFiles', pinned, vscode.ConfigurationTarget.Workspace);
+			vscode.window.showInformationMessage(`📌 Pinned "${relPath}" to ModelPilot context (${pinned.length} total).`);
+		}),
+
+		vscode.commands.registerCommand('modelpilot.unpinContextFile', async () => {
+			const cfg = vscode.workspace.getConfiguration('modelpilot');
+			const pinned: string[] = [...cfg.get<string[]>('pinnedContextFiles', [])];
+			if (pinned.length === 0) {
+				vscode.window.showInformationMessage('No files are pinned.');
+				return;
+			}
+			const picked = await vscode.window.showQuickPick(
+				pinned.map(p => ({ label: p })),
+				{ title: 'ModelPilot: Unpin Context File', placeHolder: 'Select a file to unpin' }
+			);
+			if (!picked) { return; }
+			const updated = pinned.filter(p => p !== picked.label);
+			await cfg.update('pinnedContextFiles', updated, vscode.ConfigurationTarget.Workspace);
+			vscode.window.showInformationMessage(`📌 Unpinned "${picked.label}" from context (${updated.length} remaining).`);
+		}),
+
+		vscode.commands.registerCommand('modelpilot.listPinnedContext', async () => {
+			const cfg = vscode.workspace.getConfiguration('modelpilot');
+			const pinned: string[] = cfg.get<string[]>('pinnedContextFiles', []);
+			if (pinned.length === 0) {
+				vscode.window.showInformationMessage('No files are pinned to ModelPilot context. Use "ModelPilot: Pin File to Context" to add files.');
+				return;
+			}
+			await vscode.window.showQuickPick(
+				pinned.map(p => ({ label: `📌 ${p}` })),
+				{ title: `ModelPilot: Pinned Context Files (${pinned.length})`, placeHolder: 'These files are automatically included in prompt context' }
+			);
 		}),
 
 		vscode.commands.registerCommand('modelpilot.inlineChat', () => {
@@ -2710,39 +2883,52 @@ class ModelPilotCodeActionProvider implements vscode.CodeActionProvider {
 		context: vscode.CodeActionContext,
 		token: vscode.CancellationToken
 	): vscode.ProviderResult<(vscode.CodeAction | vscode.Command)[]> {
-		if (range.isEmpty) {
-			return [];
-		}
+		const actions: vscode.CodeAction[] = [];
 		const nonCodeLanguages = ['plaintext', 'markdown', 'json', 'jsonc', 'log', 'csv', 'xml', 'svg', 'ini', 'properties', 'dotenv'];
-		if (nonCodeLanguages.includes(document.languageId)) {
-			return [];
+
+		// Diagnostics-triggered quick fix (lightbulb on errors)
+		const diagnostics = context.diagnostics.filter(
+			d => d.severity === vscode.DiagnosticSeverity.Error || d.severity === vscode.DiagnosticSeverity.Warning
+		);
+		if (diagnostics.length > 0) {
+			const diagMessages = diagnostics.map(d => `Line ${d.range.start.line + 1}: ${d.message}`).join('\n');
+			const fixDiagAction = new vscode.CodeAction(
+				`$(lightbulb) Fix with ModelPilot (${diagnostics.length} issue${diagnostics.length > 1 ? 's' : ''})`,
+				vscode.CodeActionKind.QuickFix
+			);
+			fixDiagAction.command = {
+				command: 'modelpilot.fixCode',
+				title: 'Fix with ModelPilot',
+			};
+			fixDiagAction.diagnostics = diagnostics;
+			fixDiagAction.isPreferred = true;
+			actions.push(fixDiagAction);
 		}
 
-		const explainAction = new vscode.CodeAction('ModelPilot: Explain Code', vscode.CodeActionKind.Refactor);
-		explainAction.command = {
-			command: 'modelpilot.explainCode',
-			title: 'Explain Code',
-		};
+		// Selection-based actions (only for code languages with selection)
+		if (!range.isEmpty && !nonCodeLanguages.includes(document.languageId)) {
+			const explainAction = new vscode.CodeAction('ModelPilot: Explain Code', vscode.CodeActionKind.Refactor);
+			explainAction.command = { command: 'modelpilot.explainCode', title: 'Explain Code' };
 
-		const fixAction = new vscode.CodeAction('ModelPilot: Fix Code', vscode.CodeActionKind.QuickFix);
-		fixAction.command = {
-			command: 'modelpilot.fixCode',
-			title: 'Fix Code',
-		};
+			const fixAction = new vscode.CodeAction('ModelPilot: Fix Code', vscode.CodeActionKind.QuickFix);
+			fixAction.command = { command: 'modelpilot.fixCode', title: 'Fix Code' };
 
-		const reviewAction = new vscode.CodeAction('ModelPilot: Review Code', vscode.CodeActionKind.Refactor);
-		reviewAction.command = {
-			command: 'modelpilot.reviewCode',
-			title: 'Review Code',
-		};
+			const reviewAction = new vscode.CodeAction('ModelPilot: Review Code', vscode.CodeActionKind.Refactor);
+			reviewAction.command = { command: 'modelpilot.reviewCode', title: 'Review Code' };
 
-		const testAction = new vscode.CodeAction('ModelPilot: Generate Tests', vscode.CodeActionKind.Refactor);
-		testAction.command = {
-			command: 'modelpilot.generateTests',
-			title: 'Generate Tests',
-		};
+			const testAction = new vscode.CodeAction('ModelPilot: Generate Tests', vscode.CodeActionKind.Refactor);
+			testAction.command = { command: 'modelpilot.generateTests', title: 'Generate Tests' };
 
-		return [explainAction, fixAction, reviewAction, testAction];
+			const refactorAction = new vscode.CodeAction('ModelPilot: Refactor Selection', vscode.CodeActionKind.Refactor);
+			refactorAction.command = { command: 'modelpilot.refactorSelection', title: 'Refactor Selection' };
+
+			const docstringAction = new vscode.CodeAction('ModelPilot: Generate Docstring', vscode.CodeActionKind.Refactor);
+			docstringAction.command = { command: 'modelpilot.generateDocstring', title: 'Generate Docstring' };
+
+			actions.push(explainAction, fixAction, reviewAction, testAction, refactorAction, docstringAction);
+		}
+
+		return actions;
 	}
 }
 
